@@ -166,8 +166,7 @@ func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*stor
 				}
 				if entry.Message.Usage != nil {
 					u := entry.Message.Usage
-					lineTokens := u.InputTokens + u.OutputTokens +
-						u.CacheCreationInputTokens + u.CacheReadInputTokens
+					lineTokens := u.InputTokens + u.OutputTokens
 					tokens += lineTokens
 					if hb != "" {
 						activity[hb].Tokens += lineTokens
