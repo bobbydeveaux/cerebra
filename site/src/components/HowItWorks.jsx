@@ -1,24 +1,30 @@
 export default function HowItWorks() {
   return (
     <section className="section" id="how-it-works">
-      <div className="section-label">How It Works</div>
-      <h2 className="section-title">Three commands.<br/>That's it.</h2>
+      <div className="section-label">Getting Started</div>
+      <h2 className="section-title">
+        Three steps to <span className="text-violet">total recall.</span>
+      </h2>
+      <p className="section-subtitle">
+        Single Go binary. No Docker. No Node. No Python. Get persistent agent memory
+        running in under a minute.
+      </p>
 
       <div className="steps">
         <div className="step">
           <div className="step-number">1</div>
           <div className="step-content">
-            <h3>Install Fortress</h3>
-            <p>Single Go binary. No Docker. No Node. No Python. Just build and go.</p>
+            <h3>Install Cerebra</h3>
+            <p>One command. One binary. Cross-platform.</p>
             <div className="terminal">
               <div className="terminal-header">
                 <span className="terminal-dot red" />
                 <span className="terminal-dot yellow" />
                 <span className="terminal-dot green" />
-                <span className="terminal-title">Terminal</span>
+                <span className="terminal-title">terminal</span>
               </div>
               <div className="terminal-body">
-                <span className="prompt">$</span> <span className="cmd">go install github.com/bobbydeveaux/cerebra@latest</span>
+<span className="prompt">$ </span><span className="cmd">go install github.com/bobbydeveaux/cerebra@latest</span>
               </div>
             </div>
           </div>
@@ -27,28 +33,28 @@ export default function HowItWorks() {
         <div className="step">
           <div className="step-number">2</div>
           <div className="step-content">
-            <h3>Scan Your Codebase</h3>
-            <p>Point it at any directory. It recursively scans all repos, chunks by function boundaries, and generates embeddings via Ollama running locally on your machine.</p>
+            <h3>Scan &amp; Watch</h3>
+            <p>Index your codebase and start watching agent conversations.</p>
             <div className="terminal">
               <div className="terminal-header">
                 <span className="terminal-dot red" />
                 <span className="terminal-dot yellow" />
                 <span className="terminal-dot green" />
-                <span className="terminal-title">Terminal</span>
+                <span className="terminal-title">terminal</span>
               </div>
               <div className="terminal-body">
-                <span className="prompt">$</span> <span className="cmd">fortress scan ~/code/my-org</span>{'\n'}
-                <span className="output">Scanning ....</span>{'\n'}
-                <span className="output">Processing <span className="number">1717</span> files...</span>{'\n'}
-                <span className="output">Generated <span className="number">4418</span> chunks, embedding...</span>{'\n'}
-                <span className="output">Embedding <span className="number">100%</span> <span className="accent">|========================================|</span> (<span className="number">4418</span>/<span className="number">4418</span>) [<span className="number">1m52s</span>]</span>{'\n'}
-                {'\n'}
-                <span className="success">Done! Jor-El now knows:</span>{'\n'}
-                <span className="output">  Repos:      <span className="number">12</span></span>{'\n'}
-                <span className="output">  Files:      <span className="number">1,717</span></span>{'\n'}
-                <span className="output">  Chunks:     <span className="number">4,418</span></span>{'\n'}
-                <span className="output">  Categories: <span className="number">5</span></span>{'\n'}
-                <span className="output">  DB size:    <span className="number">95.07 MB</span></span>
+<span className="comment"># Index your codebase</span>{'\n'}
+<span className="prompt">$ </span><span className="cmd">cerebra scan ~/code/my-org</span>{'\n'}
+<span className="output">Scanning 12 repositories...</span>{'\n'}
+<span className="output">  Files:    </span><span className="number">1,717</span>{'\n'}
+<span className="output">  Chunks:   </span><span className="number">4,418</span>{'\n'}
+<span className="output">  Duration: </span><span className="number">1m52s</span>{'\n'}
+<span className="success">Done.</span>{'\n'}
+{'\n'}
+<span className="comment"># Start watching agent conversations</span>{'\n'}
+<span className="prompt">$ </span><span className="cmd">cerebra brains watch</span>{'\n'}
+<span className="output">Watching ~/.claude/projects/ for conversations...</span>{'\n'}
+<span className="success">&#x2713; Indexed 3 new sessions</span>
               </div>
             </div>
           </div>
@@ -57,18 +63,24 @@ export default function HowItWorks() {
         <div className="step">
           <div className="step-number">3</div>
           <div className="step-content">
-            <h3>Connect Your AI Tools</h3>
-            <p>Start the MCP server and add it to Claude Code, Cursor, or any MCP-compatible tool. Your AI now has semantic search across your entire codebase.</p>
+            <h3>Connect Your Agents</h3>
+            <p>Start the MCP server and every AI tool gets instant access to the collective memory.</p>
             <div className="terminal">
               <div className="terminal-header">
                 <span className="terminal-dot red" />
                 <span className="terminal-dot yellow" />
                 <span className="terminal-dot green" />
-                <span className="terminal-title">Terminal</span>
+                <span className="terminal-title">terminal</span>
               </div>
               <div className="terminal-body">
-                <span className="prompt">$</span> <span className="cmd">fortress serve</span> <span className="comment"># MCP server for AI tools</span>{'\n'}
-                <span className="prompt">$</span> <span className="cmd">fortress serve <span className="flag">--ui</span></span> <span className="comment"># Web UI with wiki + chat</span>
+<span className="comment"># MCP server for Claude Code / Cursor</span>{'\n'}
+<span className="prompt">$ </span><span className="cmd">cerebra serve</span>{'\n'}
+<span className="output">MCP server listening on stdio...</span>{'\n'}
+{'\n'}
+<span className="comment"># Or with the web UI</span>{'\n'}
+<span className="prompt">$ </span><span className="cmd">cerebra serve <span className="flag">--ui</span></span>{'\n'}
+<span className="output">Web UI:  </span><span className="accent">http://localhost:8080</span>{'\n'}
+<span className="output">Wiki, chat, brain dashboard ready.</span>
               </div>
             </div>
           </div>

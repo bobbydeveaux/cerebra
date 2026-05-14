@@ -1,4 +1,4 @@
-name: Deploy Fortress
+name: Deploy Cerebra
 
 on:
   push:
