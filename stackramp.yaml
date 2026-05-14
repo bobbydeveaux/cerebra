@@ -9,4 +9,6 @@ frontend:
 database: false
 
 quality:
+  max_ccn: 50
+  max_cognitive: 70
   max_duplication: 60
