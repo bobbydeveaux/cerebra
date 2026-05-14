@@ -4,12 +4,12 @@ export default function Configuration() {
   return (
     <DocPage slug="configuration">
       <p>
-        Fortress is configured via a <code>fortress.yaml</code> file. It looks in the current
-        directory first, then falls back to <code>~/fortress.yaml</code>.
+        Cerebra is configured via a <code>cerebra.yaml</code> file. It looks in the current
+        directory first, then falls back to <code>~/cerebra.yaml</code>.
       </p>
 
       <h2>Full example</h2>
-      <Code>{`# fortress.yaml
+      <Code>{`# cerebra.yaml
 
 # Embedding provider: "ollama" or "openai"
 embedder: ollama
@@ -50,11 +50,11 @@ chunk_size: 512
 chunk_overlap: 64
 
 # Database
-db_path: .fortress/jor-el.db
-docs_path: .fortress/docs/
+db_path: .cerebra/jor-el.db
+docs_path: .cerebra/docs/
 
 # Cloud storage for DB sync (optional)
-cloud_storage: ""   # e.g. gs://my-bucket/fortress/
+cloud_storage: ""   # e.g. gs://my-bucket/cerebra/
 
 # Web UI
 ui_port: 8080
@@ -72,8 +72,8 @@ embed_batch_size: 32`}</Code>
           [<code>chat_llm</code>, '"ollama"', 'Chat LLM: ollama, openai, claude, or minimax'],
           [<code>chunk_size</code>, '512', 'Target chunk size in tokens'],
           [<code>chunk_overlap</code>, '64', 'Overlap between adjacent chunks'],
-          [<code>db_path</code>, '.fortress/jor-el.db', 'SQLite database path'],
-          [<code>docs_path</code>, '.fortress/docs/', 'Generated markdown docs path'],
+          [<code>db_path</code>, '.cerebra/jor-el.db', 'SQLite database path'],
+          [<code>docs_path</code>, '.cerebra/docs/', 'Generated markdown docs path'],
           [<code>cloud_storage</code>, '""', 'GCS or S3 URI for DB sync'],
           [<code>ui_port</code>, '8080', 'Web UI port'],
           [<code>ui_bind</code>, '"127.0.0.1"', 'Web UI bind address'],
@@ -95,7 +95,7 @@ embed_batch_size: 32`}</Code>
 
       <Callout type="warning">
         <strong>Never commit API keys.</strong> Use environment variables or keep
-        your <code>fortress.yaml</code> in your home directory (<code>~/fortress.yaml</code>)
+        your <code>cerebra.yaml</code> in your home directory (<code>~/cerebra.yaml</code>)
         outside of any git repository.
       </Callout>
     </DocPage>

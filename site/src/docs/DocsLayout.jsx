@@ -10,6 +10,8 @@ import Scanning from './pages/Scanning.jsx'
 import Searching from './pages/Searching.jsx'
 import McpServer from './pages/McpServer.jsx'
 import WebUi from './pages/WebUi.jsx'
+import Brains from './pages/Brains.jsx'
+import AgentMeetingDoc from './pages/AgentMeeting.jsx'
 import CliReference from './pages/CliReference.jsx'
 import Configuration from './pages/Configuration.jsx'
 import CiCd from './pages/CiCd.jsx'
@@ -24,6 +26,8 @@ const pageComponents = {
   'searching': Searching,
   'mcp-server': McpServer,
   'web-ui': WebUi,
+  'brains': Brains,
+  'agent-meeting': AgentMeetingDoc,
   'cli-reference': CliReference,
   'configuration': Configuration,
   'ci-cd': CiCd,
@@ -38,13 +42,27 @@ function Sidebar({ open, onClose }) {
       <aside className={`docs-sidebar ${open ? 'open' : ''}`}>
         <div className="docs-sidebar-header">
           <Link to="/" className="docs-back">
-            <svg width="20" height="20" viewBox="0 0 28 28" fill="none" style={{verticalAlign: 'middle', marginRight: '6px'}}>
-              <rect x="2" y="6" width="24" height="18" rx="3" stroke="#4fc3f7" strokeWidth="2" fill="none"/>
-              <path d="M8 2v4M20 2v4M14 2v4" stroke="#4fc3f7" strokeWidth="2" strokeLinecap="round"/>
-              <circle cx="21" cy="17" r="4" fill="#0a0a0a" stroke="#4fc3f7" strokeWidth="1.5"/>
-              <circle cx="21" cy="17" r="1.5" fill="#4fc3f7"/>
-            </svg>
-            fortress.stackramp.io
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 20,
+              height: 20,
+              borderRadius: 5,
+              background: 'linear-gradient(135deg, #a855f7, #f97316)',
+              marginRight: 6,
+              verticalAlign: 'middle',
+              flexShrink: 0,
+            }}>
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="5" r="2" fill="#fff"/>
+                <circle cx="4" cy="11" r="2" fill="#fff" opacity="0.7"/>
+                <circle cx="12" cy="11" r="2" fill="#fff" opacity="0.7"/>
+                <line x1="8" y1="5" x2="4" y2="11" stroke="#fff" strokeWidth="1" opacity="0.5"/>
+                <line x1="8" y1="5" x2="12" y2="11" stroke="#fff" strokeWidth="1" opacity="0.5"/>
+              </svg>
+            </span>
+            cerebra.stackramp.io
           </Link>
         </div>
         <nav className="docs-nav">
@@ -84,7 +102,7 @@ export default function DocsLayout() {
         <button className="docs-menu-btn" onClick={() => setSidebarOpen(true)}>
           Docs
         </button>
-        <Link to="/" className="docs-topbar-logo">Fortress</Link>
+        <Link to="/" className="docs-topbar-logo">Cerebra</Link>
       </div>
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <main className="docs-main">

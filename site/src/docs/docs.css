@@ -65,7 +65,7 @@
   align-items: center;
 }
 .docs-back:hover {
-  color: var(--accent);
+  color: var(--violet);
 }
 
 .docs-nav {
@@ -103,10 +103,10 @@
 }
 
 .docs-nav-link.active {
-  color: var(--accent);
+  color: var(--violet);
   font-weight: 600;
-  border-left-color: var(--accent);
-  background: var(--accent-dim);
+  border-left-color: var(--violet);
+  background: var(--violet-dim);
 }
 
 .docs-nav-link.external {
@@ -195,7 +195,7 @@
 }
 
 .doc-content a {
-  color: var(--accent);
+  color: var(--violet);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -212,7 +212,7 @@
   border-radius: 4px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85em;
-  color: var(--accent);
+  color: var(--violet);
 }
 
 /* ── Code blocks ── */
@@ -275,8 +275,8 @@
 
 /* ── Callout ── */
 .doc-callout {
-  border-left: 4px solid var(--accent);
-  background: var(--accent-dim);
+  border-left: 4px solid var(--violet);
+  background: var(--violet-dim);
   padding: 1rem 1.25rem;
   border-radius: 0 8px 8px 0;
   margin: 1.25rem 0;
@@ -289,8 +289,8 @@
 }
 
 .doc-callout-warning {
-  border-left-color: var(--amber);
-  background: var(--amber-dim);
+  border-left-color: var(--gold);
+  background: var(--gold-dim);
 }
 
 .doc-callout-danger {
@@ -340,8 +340,8 @@
 }
 
 .doc-link-card:hover {
-  border-color: var(--accent);
-  box-shadow: 0 2px 12px var(--accent-dim);
+  border-color: var(--violet);
+  box-shadow: 0 2px 12px var(--violet-dim);
   text-decoration: none;
 }
 
@@ -382,7 +382,7 @@
 }
 
 .doc-nav-card:hover {
-  border-color: var(--accent);
+  border-color: var(--violet);
   text-decoration: none;
 }
 
@@ -402,7 +402,7 @@
 
 .doc-nav-title {
   font-weight: 700;
-  color: var(--accent);
+  color: var(--violet);
   font-size: 0.95rem;
 }
 

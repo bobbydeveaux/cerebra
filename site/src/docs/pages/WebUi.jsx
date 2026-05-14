@@ -4,13 +4,13 @@ export default function WebUi() {
   return (
     <DocPage slug="web-ui">
       <p>
-        Fortress includes a built-in web UI for browsing your indexed codebase and chatting with it
+        Cerebra includes a built-in web UI for browsing your indexed codebase and chatting with it
         using RAG (Retrieval-Augmented Generation). No JavaScript build step required &mdash; it's
         pure <strong>htmx</strong>.
       </p>
 
       <h2>Start the web UI</h2>
-      <Code>{`fortress serve --ui`}</Code>
+      <Code>{`cerebra serve --ui`}</Code>
       <p>Open <code>http://localhost:8080</code> in your browser.</p>
 
       <h2>Wiki browser</h2>
@@ -24,6 +24,18 @@ export default function WebUi() {
         <li>View stats: repo count, file count, chunk count</li>
       </ul>
 
+      <h2>Brain dashboard</h2>
+      <p>
+        The brain dashboard shows all tracked agent sessions (brains) with their metadata,
+        last activity timestamps, and generated summaries. Use it to:
+      </p>
+      <ul>
+        <li>See all known agent sessions at a glance</li>
+        <li>View summaries of what each session accomplished</li>
+        <li>Track when sessions were last active</li>
+        <li>Discover cross-agent context and related sessions</li>
+      </ul>
+
       <h2>Search</h2>
       <p>
         The search page provides the same semantic + FTS search available in the CLI,
@@ -33,26 +45,26 @@ export default function WebUi() {
       <h2>RAG chat</h2>
       <p>
         The chat interface lets you ask questions about your codebase in natural language.
-        Fortress retrieves relevant code chunks and sends them as context to an LLM for
+        Cerebra retrieves relevant code chunks and sends them as context to an LLM for
         grounded answers with citations.
       </p>
 
       <Callout type="info">
         <strong>Conversation history:</strong> Follow-up questions have context from previous
         messages in the same session. Ask "how does auth work?" then "what does the middleware look like?"
-        and Fortress understands the context.
+        and Cerebra understands the context.
       </Callout>
 
       <h2>Chat LLM providers</h2>
       <p>
         The RAG chat supports multiple LLM providers. Configure which one to use
-        in <code>fortress.yaml</code>:
+        in <code>cerebra.yaml</code>:
       </p>
-      <Code>{`# fortress.yaml
+      <Code>{`# cerebra.yaml
 chat_llm: openai   # Options: ollama, openai, claude, minimax`}</Code>
 
       <h2>Configuration</h2>
-      <Code>{`# fortress.yaml
+      <Code>{`# cerebra.yaml
 ui_port: 8080
 ui_bind: 127.0.0.1   # Use 0.0.0.0 to expose to network`}</Code>
     </DocPage>

@@ -5,7 +5,7 @@ export default function Installation() {
     <DocPage slug="installation">
       <h2>Prerequisites</h2>
       <ul>
-        <li><strong>Go 1.22+</strong> &mdash; Fortress is built with Go</li>
+        <li><strong>Go 1.22+</strong> &mdash; Cerebra is built with Go</li>
         <li><strong>Ollama</strong> (recommended) &mdash; for local embeddings with <code>nomic-embed-text</code></li>
         <li>Or an <strong>OpenAI API key</strong> for cloud-based embeddings</li>
       </ul>
@@ -13,23 +13,23 @@ export default function Installation() {
       <h2>Install from source</h2>
       <Code>{`# Clone the repo
 git clone https://github.com/bobbydeveaux/cerebra.git
-cd fortress
+cd cerebra
 
 # Build the binary
-go build -o fortress .
+go build -o cerebra .
 
 # Move to your PATH
-sudo mv fortress /usr/local/bin/
+sudo mv cerebra /usr/local/bin/
 
 # Verify
-fortress --help`}</Code>
+cerebra --help`}</Code>
 
       <h2>Install via Go</h2>
       <Code>{`go install github.com/bobbydeveaux/cerebra@latest`}</Code>
 
       <h2>Set up Ollama (recommended)</h2>
       <p>
-        Fortress uses Ollama by default for local embeddings. Install Ollama and pull the embedding model:
+        Cerebra uses Ollama by default for local embeddings. Install Ollama and pull the embedding model:
       </p>
       <Code>{`# Install Ollama (macOS)
 brew install ollama
@@ -41,22 +41,23 @@ ollama serve
 ollama pull nomic-embed-text`}</Code>
 
       <Callout type="info">
-        <strong>Using OpenAI instead?</strong> Set your API key in <code>fortress.yaml</code> or
+        <strong>Using OpenAI instead?</strong> Set your API key in <code>cerebra.yaml</code> or
         as an environment variable: <code>export OPENAI_API_KEY=sk-...</code>, then
         set <code>embedder: openai</code> in your config.
       </Callout>
 
       <h2>Verify installation</h2>
-      <Code>{`$ fortress --help
-Fortress — codebase knowledge base for AI tools
+      <Code>{`$ cerebra --help
+Cerebra — codebase knowledge + agent memory for AI tools
 
 Usage:
-  fortress [command]
+  cerebra [command]
 
 Available Commands:
   scan     Scan and index a codebase
   search   Search the knowledge base
   serve    Start MCP or web UI server
+  brains   Manage the agent brain registry
   stats    Show database statistics
   watch    Watch for changes and re-scan
   forget   Remove a repo from the index`}</Code>

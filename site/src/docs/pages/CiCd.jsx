@@ -4,7 +4,7 @@ export default function CiCd() {
   return (
     <DocPage slug="ci-cd">
       <p>
-        Keep your Fortress index fresh automatically. Every time code is pushed, a GitHub Action
+        Keep your Cerebra index fresh automatically. Every time code is pushed, a GitHub Action
         re-scans the changed repo and uploads the updated database to cloud storage where your
         team can pull it.
       </p>
@@ -12,8 +12,8 @@ export default function CiCd() {
       <h2>How it works</h2>
       <ol>
         <li>Developer pushes code to a repo</li>
-        <li>GitHub Action triggers, downloads the current Fortress DB from cloud storage</li>
-        <li>Fortress incrementally re-scans only the changed repo</li>
+        <li>GitHub Action triggers, downloads the current Cerebra DB from cloud storage</li>
+        <li>Cerebra incrementally re-scans only the changed repo</li>
         <li>Updated DB is uploaded back to cloud storage</li>
         <li>Engineers pull the latest DB &mdash; or it syncs automatically</li>
       </ol>
@@ -21,9 +21,9 @@ export default function CiCd() {
       <h2>GitHub Action setup</h2>
       <p>
         Add this workflow to any repo you want to keep indexed. Create
-        <code> .github/workflows/fortress-index.yml</code>:
+        <code> .github/workflows/cerebra-index.yml</code>:
       </p>
-      <Code>{`name: Fortress Reindex
+      <Code>{`name: Cerebra Reindex
 
 on:
   push:
@@ -43,31 +43,31 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Install Fortress
+      - name: Install Cerebra
         run: go install github.com/bobbydeveaux/cerebra@latest
 
       - name: Download current DB
         run: |
           # Download from your cloud storage
           # GCS example:
-          gsutil cp gs://\${{ vars.FORTRESS_BUCKET }}/jor-el.db .fortress/jor-el.db || true
+          gsutil cp gs://\${{ vars.CEREBRA_BUCKET }}/jor-el.db .cerebra/jor-el.db || true
           # S3 example:
-          # aws s3 cp s3://\${{ vars.FORTRESS_BUCKET }}/jor-el.db .fortress/jor-el.db || true
+          # aws s3 cp s3://\${{ vars.CEREBRA_BUCKET }}/jor-el.db .cerebra/jor-el.db || true
 
       - name: Scan
         env:
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
-        run: fortress scan .
+        run: cerebra scan .
 
       - name: Upload updated DB
         run: |
           # GCS example:
-          gsutil cp .fortress/jor-el.db gs://\${{ vars.FORTRESS_BUCKET }}/jor-el.db
+          gsutil cp .cerebra/jor-el.db gs://\${{ vars.CEREBRA_BUCKET }}/jor-el.db
           # S3 example:
-          # aws s3 cp .fortress/jor-el.db s3://\${{ vars.FORTRESS_BUCKET }}/jor-el.db`}</Code>
+          # aws s3 cp .cerebra/jor-el.db s3://\${{ vars.CEREBRA_BUCKET }}/jor-el.db`}</Code>
 
       <Callout type="info">
-        <strong>Incremental by default.</strong> Since Fortress tracks content hashes, the CI scan
+        <strong>Incremental by default.</strong> Since Cerebra tracks content hashes, the CI scan
         only re-embeds files that changed in the push. A typical re-index on a large repo takes
         seconds, not minutes.
       </Callout>
@@ -76,7 +76,7 @@ jobs:
       <p>Set these in your GitHub repo settings:</p>
       <ul>
         <li><code>OPENAI_API_KEY</code> (secret) &mdash; if using OpenAI embeddings</li>
-        <li><code>FORTRESS_BUCKET</code> (variable) &mdash; your GCS/S3 bucket path</li>
+        <li><code>CEREBRA_BUCKET</code> (variable) &mdash; your GCS/S3 bucket path</li>
         <li>Cloud provider credentials (GCP Workload Identity or AWS role)</li>
       </ul>
 
@@ -85,7 +85,7 @@ jobs:
         For organisations with many repos, create a <strong>central indexing repo</strong> that
         checks out and scans all repos into a single database:
       </p>
-      <Code>{`name: Fortress Central Index
+      <Code>{`name: Cerebra Central Index
 
 on:
   schedule:
@@ -104,19 +104,19 @@ jobs:
         env:
           GH_TOKEN: \${{ secrets.GH_PAT }}
 
-      - name: Install Fortress
+      - name: Install Cerebra
         run: go install github.com/bobbydeveaux/cerebra@latest
 
       - name: Download current DB
-        run: gsutil cp gs://\${{ vars.FORTRESS_BUCKET }}/jor-el.db .fortress/jor-el.db || true
+        run: gsutil cp gs://\${{ vars.CEREBRA_BUCKET }}/jor-el.db .cerebra/jor-el.db || true
 
       - name: Scan all repos
         env:
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
-        run: fortress scan ./repos
+        run: cerebra scan ./repos
 
       - name: Upload updated DB
-        run: gsutil cp .fortress/jor-el.db gs://\${{ vars.FORTRESS_BUCKET }}/jor-el.db`}</Code>
+        run: gsutil cp .cerebra/jor-el.db gs://\${{ vars.CEREBRA_BUCKET }}/jor-el.db`}</Code>
 
       <Callout type="warning">
         <strong>Database locking:</strong> If multiple repos push simultaneously, they could
@@ -129,13 +129,13 @@ jobs:
         Engineers can pull the latest database to their machine:
       </p>
       <Code>{`# GCS
-gsutil cp gs://my-bucket/fortress/jor-el.db .fortress/jor-el.db
+gsutil cp gs://my-bucket/cerebra/jor-el.db .cerebra/jor-el.db
 
 # S3
-aws s3 cp s3://my-bucket/fortress/jor-el.db .fortress/jor-el.db
+aws s3 cp s3://my-bucket/cerebra/jor-el.db .cerebra/jor-el.db
 
-# Or use Fortress built-in cloud sync
-fortress scan --cloud gs://my-bucket/fortress/`}</Code>
+# Or use Cerebra built-in cloud sync
+cerebra scan --cloud gs://my-bucket/cerebra/`}</Code>
     </DocPage>
   )
 }

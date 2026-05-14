@@ -4,22 +4,22 @@ export default function Scanning() {
   return (
     <DocPage slug="scanning">
       <p>
-        The scanner is the heart of Fortress. It recursively walks your codebase, detects languages,
+        The scanner is the heart of Cerebra. It recursively walks your codebase, detects languages,
         chunks files intelligently, generates embeddings, and stores everything in the local SQLite database.
       </p>
 
       <h2>Basic usage</h2>
       <Code>{`# Scan a single repo
-fortress scan ./my-project
+cerebra scan ./my-project
 
 # Scan multiple repos at once
-fortress scan ./repos/api ./repos/frontend ./repos/infra
+cerebra scan ./repos/api ./repos/frontend ./repos/infra
 
 # Scan a parent directory (discovers all repos inside)
-fortress scan ./all-repos`}</Code>
+cerebra scan ./all-repos`}</Code>
 
       <h2>How chunking works</h2>
-      <p>Fortress chunks files differently based on their type:</p>
+      <p>Cerebra chunks files differently based on their type:</p>
       <Table
         headers={['File type', 'Strategy', 'Chunk boundaries']}
         rows={[
@@ -32,24 +32,24 @@ fortress scan ./all-repos`}</Code>
 
       <h2>Incremental scanning</h2>
       <p>
-        Fortress tracks a <code>content_hash</code> for every file and <code>last_commit_sha</code> per repo.
-        When you re-run <code>fortress scan</code>, only changed files are re-embedded. This makes
+        Cerebra tracks a <code>content_hash</code> for every file and <code>last_commit_sha</code> per repo.
+        When you re-run <code>cerebra scan</code>, only changed files are re-embedded. This makes
         subsequent scans dramatically faster.
       </p>
 
       <h2>Git history indexing</h2>
       <p>
-        Fortress indexes git commit messages as searchable documents. This means your AI tools can
+        Cerebra indexes git commit messages as searchable documents. This means your AI tools can
         answer questions like "when was the auth module last changed?" or "what was the motivation for
         the database migration?"
       </p>
 
       <h2>Ignore patterns</h2>
       <p>
-        Control which files are scanned via <code>fortress.yaml</code>. By default, Fortress skips
+        Control which files are scanned via <code>cerebra.yaml</code>. By default, Cerebra skips
         common non-code files:
       </p>
-      <Code>{`# fortress.yaml
+      <Code>{`# cerebra.yaml
 ignore:
   - .git
   - node_modules

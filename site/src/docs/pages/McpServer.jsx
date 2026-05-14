@@ -4,16 +4,16 @@ export default function McpServer() {
   return (
     <DocPage slug="mcp-server">
       <p>
-        The MCP (Model Context Protocol) server is how Fortress connects to AI tools like
+        The MCP (Model Context Protocol) server is how Cerebra connects to AI tools like
         <strong> Claude Code</strong>, <strong>Cursor</strong>, and any other MCP-compatible client.
         It runs over <strong>stdio</strong> using JSON-RPC 2.0.
       </p>
 
       <h2>Add to Claude Code</h2>
       <p>
-        Register Fortress as an MCP server in Claude Code with a single command:
+        Register Cerebra as an MCP server in Claude Code with a single command:
       </p>
-      <Code>{`claude mcp add fortress -- fortress serve --db /path/to/.fortress/jor-el.db`}</Code>
+      <Code>{`claude mcp add cerebra -- cerebra serve --db /path/to/.cerebra/jor-el.db`}</Code>
 
       <Callout type="info">
         <strong>The <code>--</code> separator is important.</strong> It tells the CLI that
@@ -21,23 +21,23 @@ export default function McpServer() {
       </Callout>
 
       <p>
-        If your database is in the current directory's <code>.fortress/</code> folder, you can omit the <code>--db</code> flag:
+        If your database is in the current directory's <code>.cerebra/</code> folder, you can omit the <code>--db</code> flag:
       </p>
-      <Code>{`claude mcp add fortress -- fortress serve`}</Code>
+      <Code>{`claude mcp add cerebra -- cerebra serve`}</Code>
 
       <h2>Verify it's working</h2>
-      <p>After adding the MCP server, Claude Code can use Fortress tools in conversation:</p>
+      <p>After adding the MCP server, Claude Code can use Cerebra tools in conversation:</p>
       <Code>{`You: "How does the authentication middleware work in our codebase?"
 
-Claude: I'll search the Fortress knowledge base for that.
-[Calls fortress.search with query "authentication middleware"]
+Claude: I'll search the Cerebra knowledge base for that.
+[Calls cerebra.search with query "authentication middleware"]
 
 Based on the codebase, the auth middleware works as follows:
 - [1] In api/middleware/auth.go (lines 15-42), the AuthMiddleware
   function validates JWT tokens...`}</Code>
 
       <h2>Available tools</h2>
-      <p>The MCP server exposes four tools that AI clients can call:</p>
+      <p>The MCP server exposes the following tools that AI clients can call:</p>
       <Table
         headers={['Tool', 'Description', 'Parameters']}
         rows={[
@@ -61,6 +61,26 @@ Based on the codebase, the auth middleware works as follows:
             'Get statistics: repo count, file count, chunk count, DB size',
             'None'
           ],
+          [
+            <code>search_brain</code>,
+            'Semantic search across indexed agent conversations and session history',
+            <><code>query</code> (string, required), <code>limit</code> (int, default: 10)</>
+          ],
+          [
+            <code>list_brains</code>,
+            'List all known agent sessions (brains) with metadata and last activity',
+            'None'
+          ],
+          [
+            <code>get_brain</code>,
+            'Retrieve details and summary for a specific agent session',
+            <><code>id</code> (string, required)</>
+          ],
+          [
+            <code>get_activity</code>,
+            'Get recent activity across all tracked agent sessions',
+            <><code>limit</code> (int, default: 20)</>
+          ],
         ]}
       />
 
@@ -75,15 +95,15 @@ Based on the codebase, the auth middleware works as follows:
 
       <h2>Add to other MCP clients</h2>
       <p>
-        Any MCP-compatible client can use Fortress. The server communicates over <strong>stdio</strong> &mdash;
-        launch it with <code>fortress serve</code> and pipe JSON-RPC messages through stdin/stdout.
+        Any MCP-compatible client can use Cerebra. The server communicates over <strong>stdio</strong> &mdash;
+        launch it with <code>cerebra serve</code> and pipe JSON-RPC messages through stdin/stdout.
       </p>
       <Code>{`# Cursor: add to .cursor/mcp.json
 {
   "mcpServers": {
-    "fortress": {
-      "command": "fortress",
-      "args": ["serve", "--db", "/path/to/.fortress/jor-el.db"]
+    "cerebra": {
+      "command": "cerebra",
+      "args": ["serve", "--db", "/path/to/.cerebra/jor-el.db"]
     }
   }
 }`}</Code>

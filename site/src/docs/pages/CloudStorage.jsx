@@ -4,7 +4,7 @@ export default function CloudStorage() {
   return (
     <DocPage slug="cloud-storage">
       <p>
-        Fortress treats the SQLite database as a portable artifact. Upload it to cloud storage
+        Cerebra treats the SQLite database as a portable artifact. Upload it to cloud storage
         and share it across your entire engineering org. Every developer gets the same
         knowledge base without running their own scan.
       </p>
@@ -19,21 +19,21 @@ export default function CloudStorage() {
       />
 
       <h2>Configuration</h2>
-      <Code>{`# fortress.yaml
-cloud_storage: "gs://my-company-fortress/prod/"`}</Code>
+      <Code>{`# cerebra.yaml
+cloud_storage: "gs://my-company-cerebra/prod/"`}</Code>
 
       <h2>Upload after scanning</h2>
       <Code>{`# Scan and upload
-fortress scan ./repos
-gsutil cp .fortress/jor-el.db gs://my-company-fortress/prod/jor-el.db`}</Code>
+cerebra scan ./repos
+gsutil cp .cerebra/jor-el.db gs://my-company-cerebra/prod/jor-el.db`}</Code>
 
       <h2>Download for local use</h2>
       <Code>{`# Download the shared database
-gsutil cp gs://my-company-fortress/prod/jor-el.db .fortress/jor-el.db
+gsutil cp gs://my-company-cerebra/prod/jor-el.db .cerebra/jor-el.db
 
 # Now use it locally
-fortress search "how does deployment work"
-fortress serve    # MCP server with full org context`}</Code>
+cerebra search "how does deployment work"
+cerebra serve    # MCP server with full org context`}</Code>
 
       <Callout type="info">
         <strong>The database is self-contained.</strong> A single <code>jor-el.db</code> file
