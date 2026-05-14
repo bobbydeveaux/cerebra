@@ -1,0 +1,25 @@
+# Binaries
+cerebra
+*.exe
+*.dylib
+*.so
+
+# Go
+vendor/
+
+# Node (site)
+site/node_modules/
+site/dist/
+
+# Database
+.cerebra/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

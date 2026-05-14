@@ -1,0 +1,51 @@
+{{template "layout" .}}
+{{define "content"}}
+<h1>Jor-El Knowledge Base</h1>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{.Stats.Repos}}</div>
+        <div class="stat-label">Repositories</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{.Stats.Files}}</div>
+        <div class="stat-label">Files</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{.Stats.Chunks}}</div>
+        <div class="stat-label">Chunks</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{.Stats.Categories}}</div>
+        <div class="stat-label">Categories</div>
+    </div>
+</div>
+
+<div class="two-col">
+    <div class="col">
+        <h2>Categories</h2>
+        <div class="category-list">
+            {{range .Categories}}
+            <a href="/categories/{{.Name}}" class="category-card">
+                <h3>{{.Name}}</h3>
+                <p>{{.FileCount}} files, {{.ChunkCount}} chunks</p>
+            </a>
+            {{else}}
+            <p>No data indexed yet. Run <code>fortress scan</code> to get started.</p>
+            {{end}}
+        </div>
+    </div>
+
+    <div class="col">
+        <h2>Directories</h2>
+        <div class="dir-list">
+            {{range .TopDirs}}
+            <div class="dir-card">
+                <span class="tree-dir">{{.Name}}/</span>
+                <span class="dir-count">{{.FileCount}} files</span>
+            </div>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}

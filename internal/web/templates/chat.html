@@ -1,0 +1,65 @@
+{{template "layout" .}}
+{{define "content"}}
+<h1>Chat with Jor-El</h1>
+
+<div class="chat-container">
+    <div id="chat-messages" class="chat-messages"></div>
+
+    <form id="chat-form" class="chat-form" onsubmit="sendMessage(event)">
+        <input type="text" id="chat-input" placeholder="Ask Jor-El about the codebase..." autofocus>
+        <button type="submit">Send</button>
+    </form>
+</div>
+
+<script>
+var chatHistory = [];
+
+function sendMessage(e) {
+    e.preventDefault();
+    const input = document.getElementById('chat-input');
+    const messages = document.getElementById('chat-messages');
+    const query = input.value.trim();
+    if (!query) return;
+
+    chatHistory.push({role: 'user', content: query});
+
+    // Add user message
+    const userMsg = document.createElement('div');
+    userMsg.className = 'message user-message';
+    userMsg.textContent = query;
+    messages.appendChild(userMsg);
+
+    // Add assistant message placeholder
+    const assistantMsg = document.createElement('div');
+    assistantMsg.className = 'message assistant-message';
+    messages.appendChild(assistantMsg);
+
+    input.value = '';
+    messages.scrollTop = messages.scrollHeight;
+
+    // Build URL with history for context
+    var url = '/api/chat/stream?q=' + encodeURIComponent(query);
+    if (chatHistory.length > 1) {
+        url += '&history=' + encodeURIComponent(JSON.stringify(chatHistory.slice(0, -1)));
+    }
+
+    // Stream response
+    var fullResponse = '';
+    const evtSource = new EventSource(url);
+    evtSource.onmessage = function(event) {
+        if (event.data === '[DONE]') {
+            evtSource.close();
+            chatHistory.push({role: 'assistant', content: fullResponse});
+            return;
+        }
+        fullResponse += event.data;
+        assistantMsg.textContent = fullResponse;
+        messages.scrollTop = messages.scrollHeight;
+    };
+    evtSource.onerror = function() {
+        evtSource.close();
+        if (fullResponse) chatHistory.push({role: 'assistant', content: fullResponse});
+    };
+}
+</script>
+{{end}}

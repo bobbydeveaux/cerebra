@@ -1,0 +1,19 @@
+{{template "layout" .}}
+{{define "content"}}
+<h1>{{.Category.Name}}</h1>
+<p class="subtitle">{{.Category.FileCount}} files, {{.Category.ChunkCount}} chunks</p>
+
+{{range .Groups}}
+<div class="dir-group">
+    <h3 class="dir-name">{{.Dir}}/</h3>
+    <ul class="file-list">
+        {{range .Files}}
+        <li>
+            <a href="/files/{{.RelPath}}" class="file-link">{{.RelPath}}</a>
+            {{if .Language}}<span class="file-lang">{{.Language}}</span>{{end}}
+        </li>
+        {{end}}
+    </ul>
+</div>
+{{end}}
+{{end}}

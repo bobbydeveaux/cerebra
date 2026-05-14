@@ -1,0 +1,29 @@
+{{template "layout" .}}
+{{define "content"}}
+<div class="doc-header">
+    <h1>{{.Path}}</h1>
+    <div class="doc-meta">
+        {{if .Document.Repo}}<span class="meta-tag">{{.Document.Repo}}</span>{{end}}
+        <span class="meta-tag">{{.Document.Category}}</span>
+        {{if .Document.Language}}<span class="meta-tag">{{.Document.Language}}</span>{{end}}
+        <span class="meta-tag">{{.Document.FileType}}</span>
+    </div>
+</div>
+
+<div class="doc-content">
+    <h2>Content</h2>
+    <pre class="source-code"><code>{{.Document.Content}}</code></pre>
+</div>
+
+{{if .Chunks}}
+<div class="doc-chunks">
+    <h2>Chunks ({{len .Chunks}})</h2>
+    {{range .Chunks}}
+    <div class="chunk-card">
+        <div class="chunk-header">Lines {{.StartLine}}-{{.EndLine}}</div>
+        <pre class="chunk-content">{{.Content}}</pre>
+    </div>
+    {{end}}
+</div>
+{{end}}
+{{end}}

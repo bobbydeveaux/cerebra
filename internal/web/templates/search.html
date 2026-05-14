@@ -1,0 +1,31 @@
+{{template "layout" .}}
+{{define "content"}}
+<h1>Search</h1>
+
+<form id="search-form" hx-post="/api/search" hx-target="#results" hx-trigger="submit" hx-indicator="#loading">
+    <div class="search-bar">
+        <input type="text" name="q" placeholder="Search the knowledge base..." value="{{.Query}}" autofocus>
+        <button type="submit">Search</button>
+    </div>
+</form>
+
+<div id="loading" class="htmx-indicator">Searching...</div>
+<div id="results"></div>
+
+<script>
+// Fallback if htmx isn't loaded
+if (typeof htmx === 'undefined') {
+    document.getElementById('search-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var q = this.querySelector('input[name=q]').value;
+        var results = document.getElementById('results');
+        results.innerHTML = 'Searching...';
+        fetch('/api/search', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'q=' + encodeURIComponent(q)
+        }).then(r => r.text()).then(html => { results.innerHTML = html; });
+    });
+}
+</script>
+{{end}}

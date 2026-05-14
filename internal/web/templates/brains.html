@@ -1,0 +1,31 @@
+{{template "layout" .}}
+{{define "content"}}
+<div class="brains-header">
+    <h1>Agent Brains</h1>
+    <div class="brain-stats-bar">
+        <span class="stat-pill">{{.Stats.TotalBrains}} brains</span>
+        <span class="stat-pill stat-active">{{.Stats.ActiveBrains}} active</span>
+        <span class="stat-pill">{{.Stats.Projects}} projects</span>
+        <span class="stat-pill">{{.Stats.TotalMessages}} messages</span>
+        <span class="stat-pill">{{formatTokens .Stats.TotalTokens}} tokens</span>
+    </div>
+</div>
+
+<div class="orb-container" id="orb-container">
+    {{range .Brains}}
+    <div class="orb {{if eq .Status "active"}}orb-active{{else}}orb-completed{{end}}"
+         style="--size: {{.OrbSize}}px; --delay: {{.AnimDelay}}s; --hue: {{.Hue}};"
+         hx-get="/api/brains/{{.BrainID}}"
+         hx-target="#brain-detail"
+         hx-swap="innerHTML transition:true">
+        <div class="orb-glow"></div>
+        <div class="orb-inner">
+            <span class="orb-project">{{.ProjectName}}</span>
+            <span class="orb-msgs">{{.MessageCount}} msgs</span>
+        </div>
+    </div>
+    {{end}}
+</div>
+
+<div id="brain-detail" class="brain-detail"></div>
+{{end}}

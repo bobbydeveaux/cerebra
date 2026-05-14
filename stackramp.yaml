@@ -1,0 +1,9 @@
+name: cerebra
+
+domain: cerebra.stackramp.io
+
+frontend:
+  framework: react
+  dir: site
+
+database: false
