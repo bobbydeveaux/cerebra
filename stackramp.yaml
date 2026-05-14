@@ -7,3 +7,6 @@ frontend:
   dir: site
 
 database: false
+
+quality:
+  max_duplication: 60
