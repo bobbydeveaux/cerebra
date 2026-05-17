@@ -88,6 +88,20 @@ type HourlyActivity struct {
 	Tokens     int    `json:"tokens"`
 }
 
+// AgentMessage represents a single subagent invocation captured from the Agent tool.
+// ID is the tool_use_id, which uniquely identifies the pairing of a tool_use with its
+// matching tool_result (the latter may arrive in a later incremental parse).
+type AgentMessage struct {
+	ID          string `json:"id"`           // tool_use_id (e.g. "toolu_01...")
+	BrainID     string `json:"brain_id"`     // parent session id
+	AgentName   string `json:"agent_name"`   // subagent_type
+	Description string `json:"description"`  // input.description
+	Prompt      string `json:"prompt"`       // input.prompt
+	Response    string `json:"response"`     // tool_result content (text only)
+	Timestamp   string `json:"timestamp"`    // ISO timestamp of the tool_use
+	ProjectKey  string `json:"project_key"`
+}
+
 type Store interface {
 	UpsertDocument(ctx context.Context, doc scanner.Document, chunks []chunker.Chunk) error
 	DeleteDocument(ctx context.Context, docID string) error
@@ -113,6 +127,11 @@ type Store interface {
 	DeleteBrainActivity(ctx context.Context, brainID string) error
 	UpsertActivity(ctx context.Context, a HourlyActivity) error
 	ListActivity(ctx context.Context, projectKey string, date string) ([]HourlyActivity, error)
+
+	// Agent message methods
+	UpsertAgentMessage(ctx context.Context, m AgentMessage) error
+	SearchAgentMessages(ctx context.Context, agentName string, query string, limit int) ([]AgentMessage, error)
+	ListAgentActivity(ctx context.Context, agentName string, startDate string, endDate string, limit int) ([]AgentMessage, error)
 
 	Close() error
 }
@@ -183,6 +202,24 @@ func (s *SQLiteStore) initSchema() error {
 		}
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("executing activity schema: %w\nSQL: %s", err, stmt)
+		}
+	}
+
+	// Create agent_messages table (subagent invocation tracking)
+	for _, stmt := range strings.Split(agentMessagesSchemaSQL, ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("executing agent_messages schema: %w\nSQL: %s", err, stmt)
+		}
+	}
+
+	// Create agent_messages FTS table (optional — requires fts5 module)
+	if _, err := s.db.Exec(agentMessagesFTSSQL); err != nil {
+		if !strings.Contains(err.Error(), "already exists") {
+			log.Printf("Warning: FTS5 not available for agent_messages: %v", err)
 		}
 	}
 

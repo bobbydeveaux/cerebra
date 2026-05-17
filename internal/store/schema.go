@@ -81,6 +81,37 @@ CREATE INDEX IF NOT EXISTS idx_brains_status ON brains(status);
 CREATE INDEX IF NOT EXISTS idx_brains_last_message_at ON brains(last_message_at);
 `
 
+const agentMessagesSchemaSQL = `
+CREATE TABLE IF NOT EXISTS agent_messages (
+    id           TEXT PRIMARY KEY,
+    brain_id     TEXT NOT NULL,
+    agent_name   TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    prompt       TEXT NOT NULL DEFAULT '',
+    response     TEXT NOT NULL DEFAULT '',
+    timestamp    TEXT,
+    project_key  TEXT NOT NULL DEFAULT '',
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_messages_agent     ON agent_messages(agent_name);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_brain     ON agent_messages(brain_id);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_timestamp ON agent_messages(timestamp);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_project   ON agent_messages(project_key);
+`
+
+const agentMessagesFTSSQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS agent_messages_fts USING fts5(
+    prompt,
+    response,
+    agent_name UNINDEXED,
+    brain_id UNINDEXED,
+    id UNINDEXED,
+    tokenize = "porter ascii"
+);
+`
+
 const activitySchemaSQL = `
 CREATE TABLE IF NOT EXISTS brain_activity (
     brain_id    TEXT NOT NULL,

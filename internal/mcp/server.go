@@ -179,6 +179,31 @@ func (s *Server) handleToolsList(req jsonRPCRequest) jsonRPCResponse {
 				},
 			},
 		},
+		{
+			Name:        "search_agent",
+			Description: "Search across a specific subagent's invocations (prompts + responses). Use this to ask 'what did Marcus flag as drift this month?' or 'what did Iris draft about Cerebra?'. Returns matching tool_use entries with their full prompt and the agent's response.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_name": map[string]interface{}{"type": "string", "description": "Subagent name (e.g. marcus, iris, atlas, felix, vita). Leave empty to search across all agents."},
+					"query":      map[string]interface{}{"type": "string", "description": "FTS5 search query (matches against prompt and response). Leave empty to get recent invocations."},
+					"limit":      map[string]interface{}{"type": "integer", "default": 10, "description": "Maximum results to return"},
+				},
+			},
+		},
+		{
+			Name:        "list_agent_activity",
+			Description: "List invocations of a specific subagent within a date range. Useful for 'how often was Atlas invoked last week?' or 'show me every Marcus check-in from yesterday'. Returns metadata-only by default (no full prompt/response bodies — use search_agent for that).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_name": map[string]interface{}{"type": "string", "description": "Subagent name (e.g. marcus). Empty for all agents."},
+					"start_date": map[string]interface{}{"type": "string", "description": "ISO date lower bound (inclusive), e.g. 2026-05-17"},
+					"end_date":   map[string]interface{}{"type": "string", "description": "ISO date upper bound (inclusive), e.g. 2026-05-17"},
+					"limit":      map[string]interface{}{"type": "integer", "default": 50, "description": "Maximum results"},
+				},
+			},
+		},
 	}
 
 	return jsonRPCResponse{
@@ -212,6 +237,10 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) jsonRP
 		return s.toolGetBrain(ctx, req.ID, params.Arguments)
 	case "get_activity":
 		return s.toolGetActivity(ctx, req.ID, params.Arguments)
+	case "search_agent":
+		return s.toolSearchAgent(ctx, req.ID, params.Arguments)
+	case "list_agent_activity":
+		return s.toolListAgentActivity(ctx, req.ID, params.Arguments)
 	default:
 		return errorResponse(req.ID, -32601, "Unknown tool: "+params.Name)
 	}
@@ -426,6 +455,63 @@ func (s *Server) toolGetActivity(ctx context.Context, id json.RawMessage, args j
 	json.Unmarshal(args, &input)
 
 	rows, err := s.store.ListActivity(ctx, input.Project, input.Date)
+	if err != nil {
+		return errorResponse(id, -32000, "Error: "+err.Error())
+	}
+
+	content, _ := json.Marshal(rows)
+	return jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": string(content)},
+			},
+		},
+	}
+}
+
+func (s *Server) toolSearchAgent(ctx context.Context, id json.RawMessage, args json.RawMessage) jsonRPCResponse {
+	var input struct {
+		AgentName string `json:"agent_name"`
+		Query     string `json:"query"`
+		Limit     int    `json:"limit"`
+	}
+	json.Unmarshal(args, &input)
+	if input.Limit <= 0 {
+		input.Limit = 10
+	}
+
+	rows, err := s.store.SearchAgentMessages(ctx, input.AgentName, input.Query, input.Limit)
+	if err != nil {
+		return errorResponse(id, -32000, "Error: "+err.Error())
+	}
+
+	content, _ := json.Marshal(rows)
+	return jsonRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result: map[string]interface{}{
+			"content": []map[string]interface{}{
+				{"type": "text", "text": string(content)},
+			},
+		},
+	}
+}
+
+func (s *Server) toolListAgentActivity(ctx context.Context, id json.RawMessage, args json.RawMessage) jsonRPCResponse {
+	var input struct {
+		AgentName string `json:"agent_name"`
+		StartDate string `json:"start_date"`
+		EndDate   string `json:"end_date"`
+		Limit     int    `json:"limit"`
+	}
+	json.Unmarshal(args, &input)
+	if input.Limit <= 0 {
+		input.Limit = 50
+	}
+
+	rows, err := s.store.ListAgentActivity(ctx, input.AgentName, input.StartDate, input.EndDate, input.Limit)
 	if err != nil {
 		return errorResponse(id, -32000, "Error: "+err.Error())
 	}

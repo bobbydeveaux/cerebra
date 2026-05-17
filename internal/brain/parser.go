@@ -52,19 +52,38 @@ type usagePayload struct {
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
+// agentToolUseInput captures the fields we care about from an Agent tool_use's input.
+type agentToolUseInput struct {
+	SubagentType string `json:"subagent_type"`
+	Description  string `json:"description"`
+	Prompt       string `json:"prompt"`
+}
+
+// contentBlock represents one element of a message.content array (assistant or user role).
+type contentBlock struct {
+	Type       string          `json:"type"`
+	ID         string          `json:"id,omitempty"`           // tool_use id
+	Name       string          `json:"name,omitempty"`         // tool_use name
+	Input      json.RawMessage `json:"input,omitempty"`        // tool_use input
+	ToolUseID  string          `json:"tool_use_id,omitempty"`  // tool_result back-reference
+	Content    json.RawMessage `json:"content,omitempty"`      // tool_result content (string or blocks)
+	Text       string          `json:"text,omitempty"`         // text block
+}
+
 // ParseSessionFile parses a Claude Code JSONL conversation file.
 // If offset > 0, it seeks to that position for incremental reading.
-// Returns the parsed brain, per-hour activity buckets, the new byte offset, and any error.
-func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*store.HourlyActivity, int64, error) {
+// Returns the parsed brain, per-hour activity buckets, captured agent messages,
+// the new byte offset, and any error.
+func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*store.HourlyActivity, []store.AgentMessage, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 	defer f.Close()
 
 	if offset > 0 {
 		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			return nil, nil, 0, err
+			return nil, nil, nil, 0, err
 		}
 	}
 
@@ -82,6 +101,10 @@ func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*stor
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024) // 4MB max line
 
 	activity := make(map[string]*store.HourlyActivity)
+	// Captured agent (subagent) invocations keyed by tool_use_id. Tool_use and
+	// tool_result may appear on different lines (potentially across incremental
+	// parses), so we accumulate and emit at the end.
+	agentMsgs := make(map[string]*store.AgentMessage)
 
 	var (
 		msgCount   int
@@ -154,6 +177,21 @@ func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*stor
 			if firstMsg == "" && entry.Message != nil {
 				firstMsg = extractTextContent(entry.Message.Content)
 			}
+			// A "user" entry in the JSONL is also where tool_result blocks live
+			// (they're the response side of a tool call). Scan for any
+			// tool_result blocks that match an Agent tool_use we've seen.
+			if entry.Message != nil {
+				for _, b := range decodeContentBlocks(entry.Message.Content) {
+					if b.Type == "tool_result" && b.ToolUseID != "" {
+						// Only update if we have an outstanding agent invocation
+						// with this ID — avoids storing every tool_result for
+						// non-Agent tools (Read, Bash, Edit, etc.).
+						if msg, ok := agentMsgs[b.ToolUseID]; ok {
+							msg.Response = extractTextContent(b.Content)
+						}
+					}
+				}
+			}
 
 		case "assistant":
 			msgCount++
@@ -172,6 +210,25 @@ func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*stor
 						activity[hb].Tokens += lineTokens
 					}
 				}
+				// Look for Agent tool_use blocks — these are subagent invocations.
+				for _, b := range decodeContentBlocks(entry.Message.Content) {
+					if b.Type != "tool_use" || b.Name != "Agent" || b.ID == "" {
+						continue
+					}
+					var in agentToolUseInput
+					if err := json.Unmarshal(b.Input, &in); err != nil || in.SubagentType == "" {
+						continue
+					}
+					agentMsgs[b.ID] = &store.AgentMessage{
+						ID:          b.ID,
+						BrainID:     sessionID,
+						AgentName:   in.SubagentType,
+						Description: in.Description,
+						Prompt:      in.Prompt,
+						Timestamp:   entry.Timestamp,
+						ProjectKey:  projectKey,
+					}
+				}
 			}
 
 		case "tool_use", "tool_result":
@@ -182,13 +239,13 @@ func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*stor
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 
 	// Get final file position
 	newOffset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return nil, nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 
 	b.ProjectPath = cwd
@@ -204,7 +261,28 @@ func ParseSessionFile(path string, offset int64) (*store.Brain, map[string]*stor
 	b.Slug = slug
 	b.Version = version
 
-	return b, activity, newOffset, nil
+	agentMessages := make([]store.AgentMessage, 0, len(agentMsgs))
+	for _, m := range agentMsgs {
+		agentMessages = append(agentMessages, *m)
+	}
+
+	return b, activity, agentMessages, newOffset, nil
+}
+
+// decodeContentBlocks decodes a message.content field into an array of
+// content blocks. Claude Code JSONL stores content as either:
+//   - a string (legacy / simple text message)
+//   - an array of typed blocks (modern — tool_use, tool_result, text, etc.)
+// Returns an empty slice when the content is a plain string (no blocks to inspect).
+func decodeContentBlocks(raw json.RawMessage) []contentBlock {
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return nil
+	}
+	return blocks
 }
 
 // MergeIncremental merges incremental parse results into an existing brain.

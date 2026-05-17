@@ -183,7 +183,7 @@ func (w *Watcher) handleEvent(ctx context.Context, watcher *fsnotify.Watcher, ev
 }
 
 func (w *Watcher) processFile(ctx context.Context, path string, offset int64, doIndex bool) error {
-	parsed, activity, _, err := ParseSessionFile(path, offset)
+	parsed, activity, agentMessages, _, err := ParseSessionFile(path, offset)
 	if err != nil {
 		return err
 	}
@@ -217,6 +217,14 @@ func (w *Watcher) processFile(ctx context.Context, path string, offset int64, do
 	for _, a := range activity {
 		if err := w.store.UpsertActivity(ctx, *a); err != nil {
 			log.Printf("Warning: upserting activity for %s/%s: %v", a.BrainID[:8], a.Hour, err)
+		}
+	}
+
+	// Persist agent (subagent) invocations. Upsert semantics let the tool_use
+	// and matching tool_result be stitched together across incremental parses.
+	for _, m := range agentMessages {
+		if err := w.store.UpsertAgentMessage(ctx, m); err != nil {
+			log.Printf("Warning: upserting agent_message %s: %v", m.ID, err)
 		}
 	}
 
