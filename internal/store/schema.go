@@ -112,6 +112,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS agent_messages_fts USING fts5(
 );
 `
 
+const licenseSchemaSQL = `
+CREATE TABLE IF NOT EXISTS licenses (
+    api_key            TEXT PRIMARY KEY,
+    email              TEXT NOT NULL DEFAULT '',
+    stripe_customer_id TEXT NOT NULL DEFAULT '',
+    granted_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_licenses_stripe_customer ON licenses(stripe_customer_id);
+`
+
 const activitySchemaSQL = `
 CREATE TABLE IF NOT EXISTS brain_activity (
     brain_id    TEXT NOT NULL,
