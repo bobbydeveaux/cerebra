@@ -14,11 +14,14 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 
+	"github.com/bobbydeveaux/cerebra/internal/store"
 	stripe "github.com/stripe/stripe-go/v76"
 	"github.com/stripe/stripe-go/v76/webhook"
 )
@@ -50,6 +53,174 @@ func (loggingStripeHandler) OnCheckoutComplete(_ context.Context, event stripe.E
 func (loggingStripeHandler) OnSubscriptionDeleted(_ context.Context, event stripe.Event) error {
 	log.Printf("stripe: customer.subscription.deleted id=%s", event.ID)
 	return nil
+}
+
+// licenseStripeHandler is the production StripeEventHandler. It translates
+// Stripe events into LicenseStore.Grant / LicenseStore.Revoke calls.
+//
+// Wire-format expectations:
+//
+//   - checkout.session.completed: the API key the customer is paying for
+//     arrives in client_reference_id. The Cerebra signup flow MUST set
+//     this when creating the checkout session — without it we have no way
+//     to bind a paid subscription to a key. customer_email is taken from
+//     customer_details.email or the legacy customer_email field. The
+//     Stripe customer ID is the .customer.id sub-field; the customer is
+//     either inlined (when expanded) or a bare ID — we accept both.
+//   - customer.subscription.deleted: only the Stripe customer ID matters.
+//     We pull it from the embedded subscription object's .customer field.
+//
+// Any field shape we cannot parse is logged and returned as an error so
+// Stripe retries; the alternative — silently succeeding — would leave
+// paying users locked out or revoked users still entitled.
+type licenseStripeHandler struct {
+	store store.LicenseStore
+}
+
+func (h *licenseStripeHandler) OnCheckoutComplete(ctx context.Context, event stripe.Event) error {
+	if h.store == nil {
+		return errors.New("license store is nil")
+	}
+	apiKey, email, customerID, err := parseCheckoutSession(event)
+	if err != nil {
+		return fmt.Errorf("parse checkout session %s: %w", event.ID, err)
+	}
+	if apiKey == "" {
+		// client_reference_id was not set. We refuse to silently accept
+		// because there is no other way to bind the subscription to a
+		// Cerebra account — better to fail loudly so the signup flow
+		// gets fixed.
+		return fmt.Errorf("checkout session %s missing client_reference_id (cannot bind to api key)", event.ID)
+	}
+	log.Printf("stripe: granting license api_key=%s customer=%s", redactKey(apiKey), customerID)
+	return h.store.Grant(ctx, apiKey, email, customerID)
+}
+
+func (h *licenseStripeHandler) OnSubscriptionDeleted(ctx context.Context, event stripe.Event) error {
+	if h.store == nil {
+		return errors.New("license store is nil")
+	}
+	customerID, err := parseSubscriptionCustomer(event)
+	if err != nil {
+		return fmt.Errorf("parse subscription deletion %s: %w", event.ID, err)
+	}
+	if customerID == "" {
+		return fmt.Errorf("subscription deletion %s missing customer id", event.ID)
+	}
+	log.Printf("stripe: revoking license customer=%s", customerID)
+	return h.store.Revoke(ctx, customerID)
+}
+
+// checkoutSessionMinimal is a minimal projection of CheckoutSession used
+// purely so we can JSON-decode the bits we need without depending on
+// every nested type in the stripe-go SDK. The SDK's CheckoutSession would
+// also work, but it pulls in many transitive types whose JSON shapes can
+// shift between API versions — a flat struct of strings is the most
+// version-tolerant option.
+type checkoutSessionMinimal struct {
+	ID                string `json:"id"`
+	ClientReferenceID string `json:"client_reference_id"`
+	CustomerEmail     string `json:"customer_email"`
+	// Customer arrives either as a string (the ID) or an object with an
+	// id field, depending on whether the event was expanded. We decode
+	// to json.RawMessage and resolve in parseCheckoutSession.
+	Customer        json.RawMessage `json:"customer"`
+	CustomerDetails struct {
+		Email string `json:"email"`
+	} `json:"customer_details"`
+}
+
+type subscriptionMinimal struct {
+	ID       string          `json:"id"`
+	Customer json.RawMessage `json:"customer"`
+}
+
+// parseCheckoutSession returns (apiKey, email, stripeCustomerID, err).
+func parseCheckoutSession(event stripe.Event) (string, string, string, error) {
+	var sess checkoutSessionMinimal
+	if err := json.Unmarshal(event.Data.Raw, &sess); err != nil {
+		return "", "", "", fmt.Errorf("unmarshal session: %w", err)
+	}
+	email := sess.CustomerDetails.Email
+	if email == "" {
+		email = sess.CustomerEmail
+	}
+	customerID, err := decodeCustomerID(sess.Customer)
+	if err != nil {
+		return "", "", "", err
+	}
+	return sess.ClientReferenceID, email, customerID, nil
+}
+
+// parseSubscriptionCustomer pulls the Stripe customer ID out of a
+// customer.subscription.deleted event.
+func parseSubscriptionCustomer(event stripe.Event) (string, error) {
+	var sub subscriptionMinimal
+	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
+		return "", fmt.Errorf("unmarshal subscription: %w", err)
+	}
+	return decodeCustomerID(sub.Customer)
+}
+
+// decodeCustomerID handles the two wire shapes Stripe uses for the
+// .customer field on events: a bare string ID ("cus_abc"), or an embedded
+// object ({"id":"cus_abc",...}).
+func decodeCustomerID(raw json.RawMessage) (string, error) {
+	raw = bytesTrim(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
+	}
+	// Bare string case: "cus_abc"
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return "", fmt.Errorf("unmarshal customer string: %w", err)
+		}
+		return s, nil
+	}
+	// Object case: {"id":"cus_abc", ...}
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return "", fmt.Errorf("unmarshal customer object: %w", err)
+	}
+	return obj.ID, nil
+}
+
+// bytesTrim is the byte equivalent of strings.TrimSpace for json.RawMessage.
+func bytesTrim(b []byte) []byte {
+	start, end := 0, len(b)
+	for start < end {
+		c := b[start]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		start++
+	}
+	for end > start {
+		c := b[end-1]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		end--
+	}
+	return b[start:end]
+}
+
+// redactKey returns the apiKey with all but the last 4 characters replaced
+// by '*' for log lines.
+func redactKey(k string) string {
+	if len(k) <= 4 {
+		return "****"
+	}
+	return "****" + k[len(k)-4:]
+}
+
+// NewLicenseStripeHandler returns the production StripeEventHandler that
+// translates checkout / subscription events into LicenseStore updates.
+func NewLicenseStripeHandler(s store.LicenseStore) StripeEventHandler {
+	return &licenseStripeHandler{store: s}
 }
 
 // handleStripeWebhook is the POST /api/stripe/webhook endpoint.
