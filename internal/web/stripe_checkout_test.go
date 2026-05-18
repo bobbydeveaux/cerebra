@@ -385,6 +385,97 @@ func TestCheckoutClientOrDefaultPrefersInjected(t *testing.T) {
 	}
 }
 
+func TestCreateCheckoutHonoursURLOverrides(t *testing.T) {
+	t.Setenv("STRIPE_GROWTH_PRICE_ID", "price_growth_test_123")
+	t.Setenv("STRIPE_CHECKOUT_SUCCESS_URL", "https://dev.example/welcome?session_id={CHECKOUT_SESSION_ID}")
+	t.Setenv("STRIPE_CHECKOUT_CANCEL_URL", "https://dev.example/pricing")
+
+	client := &fakeCheckoutClient{
+		createSessionID:   "cs_override",
+		createCheckoutURL: "https://checkout.stripe.com/pay/cs_override",
+	}
+	srv := newCheckoutServerForTest(client)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{"client_reference_id":"ck_user_42"}`))
+	w := httptest.NewRecorder()
+
+	srv.handleCreateCheckout(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d. body=%q", w.Code, w.Body.String())
+	}
+	if client.lastCreateOpts.SuccessURL != "https://dev.example/welcome?session_id={CHECKOUT_SESSION_ID}" {
+		t.Errorf("success url override: got %q", client.lastCreateOpts.SuccessURL)
+	}
+	if client.lastCreateOpts.CancelURL != "https://dev.example/pricing" {
+		t.Errorf("cancel url override: got %q", client.lastCreateOpts.CancelURL)
+	}
+}
+
+func TestCreateCheckoutRejectsOversizeBody(t *testing.T) {
+	// A body larger than checkoutBodyMaxBytes must surface as 400 — we
+	// must not let a public endpoint pull unbounded data into memory.
+	t.Setenv("STRIPE_GROWTH_PRICE_ID", "price_growth_test_123")
+
+	client := &fakeCheckoutClient{}
+	srv := newCheckoutServerForTest(client)
+
+	huge := strings.Repeat("a", checkoutBodyMaxBytes+1)
+	body := `{"client_reference_id":"` + huge + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	srv.handleCreateCheckout(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 on oversize body, got %d. body=%q", w.Code, w.Body.String())
+	}
+	if got := client.createCalls.Load(); got != 0 {
+		t.Errorf("client should not have been called on oversize body, got %d calls", got)
+	}
+}
+
+func TestCreateCheckoutPropagatesContext(t *testing.T) {
+	// The handler must pass the request context to the checkout client
+	// so cancels and deadlines reach the outbound Stripe call. The fake
+	// records ctx.Err() at call time.
+	t.Setenv("STRIPE_GROWTH_PRICE_ID", "price_growth_test_123")
+
+	client := &ctxRecordingClient{}
+	srv := newCheckoutServerForTest(client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel so the fake observes the cancellation
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{"client_reference_id":"ck_user_42"}`)).WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	srv.handleCreateCheckout(w, req)
+
+	if client.createErr == nil {
+		t.Fatal("want cancellation observed in handler ctx, got nil ctx err")
+	}
+	if !errors.Is(client.createErr, context.Canceled) {
+		t.Errorf("want context.Canceled, got %v", client.createErr)
+	}
+}
+
+// ctxRecordingClient is a fakeCheckoutClient variant that records the
+// ctx.Err() seen at call time, so tests can verify the handler passed
+// the right context down.
+type ctxRecordingClient struct {
+	createErr error
+}
+
+func (c *ctxRecordingClient) CreateSubscriptionSession(ctx context.Context, _ createCheckoutOptions) (string, string, error) {
+	c.createErr = ctx.Err()
+	return "cs_ctx", "https://checkout.stripe.com/pay/cs_ctx", nil
+}
+
+func (c *ctxRecordingClient) GetSession(ctx context.Context, _ string) (string, string, error) {
+	c.createErr = ctx.Err()
+	return "", "", nil
+}
+
 func TestStripeCheckoutClientRejectsEmptyPriceID(t *testing.T) {
 	c := newEnvStripeCheckoutClient("sk_test_abc")
 	_, _, err := c.CreateSubscriptionSession(context.Background(), createCheckoutOptions{})

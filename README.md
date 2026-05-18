@@ -245,6 +245,8 @@ embed_batch_size: 32
 | `STRIPE_SECRET_KEY` | Stripe API key used by `POST /api/stripe/create-checkout` and `GET /api/stripe/session`. | Cerebra paid funnel |
 | `STRIPE_WEBHOOK_SECRET` | Verifies `POST /api/stripe/webhook` signatures. | Cerebra paid funnel |
 | `STRIPE_GROWTH_PRICE_ID` | Stripe price ID for the Growth tier (£499/mo) used when creating checkout sessions. | Cerebra paid funnel |
+| `STRIPE_CHECKOUT_SUCCESS_URL` | Override the `success_url` Stripe redirects to after a paid checkout. Defaults to `https://cerebra.stackramp.io/welcome?session_id={CHECKOUT_SESSION_ID}`. | Optional |
+| `STRIPE_CHECKOUT_CANCEL_URL` | Override the `cancel_url` Stripe sends customers to on cancel. Defaults to `https://cerebra.stackramp.io/pricing`. | Optional |
 
 ---
 

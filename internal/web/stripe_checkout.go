@@ -53,11 +53,23 @@ type createCheckoutOptions struct {
 }
 
 const (
-	// successURL is the page customers land on after a successful payment.
-	// {CHECKOUT_SESSION_ID} is a Stripe template variable expanded by
-	// Stripe before redirect.
+	// defaultCheckoutSuccessURL is the page customers land on after a
+	// successful payment. {CHECKOUT_SESSION_ID} is a Stripe template
+	// variable expanded by Stripe before redirect. Overridable via the
+	// STRIPE_CHECKOUT_SUCCESS_URL env var so dev / staging deploys can
+	// point at locally-served pages, and so the URL can be retargeted
+	// without a code change if the marketing site routes get renamed.
 	defaultCheckoutSuccessURL = "https://cerebra.stackramp.io/welcome?session_id={CHECKOUT_SESSION_ID}"
-	defaultCheckoutCancelURL  = "https://cerebra.stackramp.io/pricing"
+	// defaultCheckoutCancelURL is where Stripe sends customers who hit
+	// "Back" on the Stripe-hosted page. Overridable via
+	// STRIPE_CHECKOUT_CANCEL_URL.
+	defaultCheckoutCancelURL = "https://cerebra.stackramp.io/pricing"
+
+	// checkoutBodyMaxBytes caps the JSON body the create-checkout
+	// endpoint will read. The request only carries a short api key and
+	// an email; 8 KiB is far above the legitimate ceiling and protects
+	// the process from huge-string allocations on a public path.
+	checkoutBodyMaxBytes = 8 << 10
 )
 
 // createCheckoutRequest is the optional JSON body accepted by
@@ -101,10 +113,12 @@ func (s *Server) handleCreateCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Body is optional. An unreadable / malformed body is the caller's
-	// fault (400); a truly empty body is fine (handled below).
+	// fault (400); a truly empty body is fine (handled below). The
+	// MaxBytesReader cap protects this public endpoint from huge-string
+	// payloads that would otherwise force unbounded reads.
 	var req createCheckoutRequest
 	if r.Body != nil {
-		dec := json.NewDecoder(r.Body)
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, checkoutBodyMaxBytes))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil && !isEmptyBodyEOF(err) {
 			log.Printf("stripe: create-checkout decode body: %v", err)
@@ -134,8 +148,8 @@ func (s *Server) handleCreateCheckout(w http.ResponseWriter, r *http.Request) {
 
 	sessID, url, err := client.CreateSubscriptionSession(r.Context(), createCheckoutOptions{
 		PriceID:           priceID,
-		SuccessURL:        defaultCheckoutSuccessURL,
-		CancelURL:         defaultCheckoutCancelURL,
+		SuccessURL:        envOr("STRIPE_CHECKOUT_SUCCESS_URL", defaultCheckoutSuccessURL),
+		CancelURL:         envOr("STRIPE_CHECKOUT_CANCEL_URL", defaultCheckoutCancelURL),
 		ClientReferenceID: clientRef,
 		CustomerEmail:     strings.TrimSpace(req.CustomerEmail),
 	})
@@ -222,7 +236,7 @@ func newEnvStripeCheckoutClient(apiKey string) *stripeCheckoutClient {
 	return &stripeCheckoutClient{apiKey: apiKey}
 }
 
-func (c *stripeCheckoutClient) CreateSubscriptionSession(_ context.Context, opts createCheckoutOptions) (string, string, error) {
+func (c *stripeCheckoutClient) CreateSubscriptionSession(ctx context.Context, opts createCheckoutOptions) (string, string, error) {
 	if opts.PriceID == "" {
 		return "", "", fmt.Errorf("price id is required")
 	}
@@ -237,6 +251,10 @@ func (c *stripeCheckoutClient) CreateSubscriptionSession(_ context.Context, opts
 			},
 		},
 	}
+	// Forward the HTTP request context to stripe-go so client cancels
+	// and deadlines propagate to the outbound Stripe call instead of
+	// waiting for the SDK's default timeout.
+	params.Context = ctx
 	if opts.ClientReferenceID != "" {
 		params.ClientReferenceID = stripe.String(opts.ClientReferenceID)
 	}
@@ -251,9 +269,14 @@ func (c *stripeCheckoutClient) CreateSubscriptionSession(_ context.Context, opts
 	return sess.ID, sess.URL, nil
 }
 
-func (c *stripeCheckoutClient) GetSession(_ context.Context, id string) (string, string, error) {
+func (c *stripeCheckoutClient) GetSession(ctx context.Context, id string) (string, string, error) {
+	// Use an empty params struct purely so we can pin the request
+	// context. Without this, a client disconnect leaves the Stripe
+	// lookup running until stripe-go's default timeout fires.
+	params := &stripe.CheckoutSessionParams{}
+	params.Context = ctx
 	client := session.Client{B: stripe.GetBackend(stripe.APIBackend), Key: c.apiKey}
-	sess, err := client.Get(id, nil)
+	sess, err := client.Get(id, params)
 	if err != nil {
 		return "", "", fmt.Errorf("stripe get session %s: %w", id, err)
 	}
@@ -265,6 +288,15 @@ func (c *stripeCheckoutClient) GetSession(_ context.Context, id string) (string,
 		email = sess.CustomerEmail
 	}
 	return email, string(sess.Status), nil
+}
+
+// envOr returns the trimmed value of the named env var, or fallback if
+// the env var is unset or whitespace-only.
+func envOr(name, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return fallback
 }
 
 // isEmptyBodyEOF returns true when a json.Decoder error is an unwrapped
