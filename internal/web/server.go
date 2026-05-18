@@ -93,8 +93,12 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 	// /api/chat/stream is the paid-tier gated endpoint. RequirePaid is a
 	// transparent pass-through when CEREBRA_FREE_TIER_ENABLED is unset or
 	// "true" (the default), so local dev keeps working without Stripe.
+	// The resolver pattern means WithLicenseStore can be called after
+	// NewServer and the route picks up the new store on the next request.
 	chatStream := http.HandlerFunc(srv.handleChatStream)
-	srv.mux.Handle("GET /api/chat/stream", RequirePaid(srv.licenseStore)(chatStream))
+	srv.mux.Handle("GET /api/chat/stream", RequirePaid(func() store.LicenseStore {
+		return srv.licenseStore
+	})(chatStream))
 	srv.mux.HandleFunc("POST /api/stripe/webhook", srv.handleStripeWebhook)
 	srv.mux.Handle("GET /static/", http.FileServerFS(staticFS))
 

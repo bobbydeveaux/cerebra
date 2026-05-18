@@ -42,6 +42,16 @@ function sendMessage(e) {
     if (chatHistory.length > 1) {
         url += '&history=' + encodeURIComponent(JSON.stringify(chatHistory.slice(0, -1)));
     }
+    // EventSource cannot send Authorization headers, so we pass the
+    // Cerebra API key via the `key` query param when the wall is on
+    // (CEREBRA_FREE_TIER_ENABLED=false). Stored in localStorage so the
+    // user only pastes it once.
+    try {
+        var cerebraKey = window.localStorage.getItem('cerebra_api_key');
+        if (cerebraKey) {
+            url += '&key=' + encodeURIComponent(cerebraKey);
+        }
+    } catch (_) { /* localStorage may be disabled; fall through */ }
 
     // Stream response
     var fullResponse = '';

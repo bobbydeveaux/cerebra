@@ -55,18 +55,39 @@ func freeTierEnabled() bool {
 	}
 }
 
+// licenseStoreFunc is how the middleware reaches the current LicenseStore.
+// We do not capture the store value at wrap time because the Server is
+// constructed before WithLicenseStore is called — the route closure must
+// read the latest store on each request.
+type licenseStoreFunc func() store.LicenseStore
+
 // RequirePaid returns middleware that gates the next handler behind a paid
-// licence. If the LicenseStore is nil OR the free-tier env var is on, the
-// middleware is a transparent pass-through.
-func RequirePaid(licenses store.LicenseStore) func(http.Handler) http.Handler {
+// licence. The store is resolved at request time so callers can wire it
+// up after route registration (e.g. via Server.WithLicenseStore). If the
+// resolver returns nil OR the free-tier env var is on, the middleware is
+// a transparent pass-through.
+//
+// The API key may arrive in either an `Authorization: Bearer <key>`
+// header (preferred, REST clients) or a `key=<key>` query parameter
+// (the browser chat page, which uses EventSource and so cannot set
+// arbitrary headers). The header wins if both are present.
+func RequirePaid(resolve licenseStoreFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if licenses == nil || freeTierEnabled() {
+			if freeTierEnabled() {
+				next.ServeHTTP(w, r)
+				return
+			}
+			var licenses store.LicenseStore
+			if resolve != nil {
+				licenses = resolve()
+			}
+			if licenses == nil {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			apiKey := bearerToken(r.Header.Get("Authorization"))
+			apiKey := extractAPIKey(r)
 			if apiKey == "" {
 				writePaymentRequired(w)
 				return
@@ -86,6 +107,17 @@ func RequirePaid(licenses store.LicenseStore) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// extractAPIKey reads the Cerebra API key from the request. It tries the
+// Authorization header first (the canonical place for REST clients) and
+// falls back to the `key` query parameter for browser EventSource flows
+// that cannot set arbitrary headers.
+func extractAPIKey(r *http.Request) string {
+	if v := bearerToken(r.Header.Get("Authorization")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(r.URL.Query().Get("key"))
 }
 
 // bearerToken extracts the token from a "Bearer <token>" Authorization

@@ -69,7 +69,7 @@ func TestLicenseStripeHandler_CheckoutComplete_CustomerAsString(t *testing.T) {
 
 	// When the event arrives without expanding the customer, .customer is
 	// a bare string ID rather than an object.
-	raw := []byte(`{"id":"cs_test_2","client_reference_id":"ck_bob","customer_email":"bob@x","customer":"cus_bob_str"}`)
+	raw := []byte(`{"id":"cs_test_2","client_reference_id":"ck_bob","customer_email":"bob@x","mode":"subscription","subscription":"sub_bob","customer":"cus_bob_str"}`)
 	event := stripe.Event{
 		ID:   "evt_test_2",
 		Type: "checkout.session.completed",
@@ -104,7 +104,7 @@ func TestLicenseStripeHandler_CheckoutComplete_MissingClientReferenceID_Errors(t
 	// Production signup MUST set client_reference_id; if it doesn't, we
 	// have no way to bind the subscription to a Cerebra API key and we
 	// MUST loudly fail so Stripe retries (or so the bug gets noticed).
-	raw := []byte(`{"id":"cs_test_3","customer_email":"x@y","customer":"cus_nobody"}`)
+	raw := []byte(`{"id":"cs_test_3","customer_email":"x@y","mode":"subscription","subscription":"sub_x","customer":"cus_nobody"}`)
 	event := stripe.Event{
 		ID:   "evt_test_3",
 		Type: "checkout.session.completed",
@@ -183,6 +183,8 @@ func TestStripeWebhook_EndToEnd_DispatchesToLicenseStore(t *testing.T) {
 		"id":                  "cs_e2e_1",
 		"client_reference_id": "ck_e2e",
 		"customer_email":      "e2e@x",
+		"mode":                "subscription",
+		"subscription":        "sub_e2e",
 		"customer":            "cus_e2e",
 	})
 	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/stripe/webhook", strings.NewReader(string(payload)))
@@ -204,12 +206,76 @@ func TestStripeWebhook_EndToEnd_DispatchesToLicenseStore(t *testing.T) {
 	}
 }
 
+func TestLicenseStripeHandler_CheckoutComplete_PaymentModeIsSkipped(t *testing.T) {
+	ls := store.NewMemoryLicenseStore()
+	h := NewLicenseStripeHandler(ls)
+
+	// A one-off payment Checkout Session. We deliberately set
+	// client_reference_id here so the test isolates the mode check
+	// rather than the missing-key check.
+	raw := []byte(`{"id":"cs_pay","client_reference_id":"ck_pay","customer_email":"p@x","mode":"payment","customer":"cus_pay"}`)
+	event := stripe.Event{
+		ID:   "evt_pay",
+		Type: "checkout.session.completed",
+		Data: &stripe.EventData{Raw: raw},
+	}
+
+	if err := h.OnCheckoutComplete(context.Background(), event); err != nil {
+		t.Fatalf("payment-mode checkout should be skipped without error, got %v", err)
+	}
+	if paid, _ := ls.IsPaid(context.Background(), "ck_pay"); paid {
+		t.Fatal("payment-mode checkout must NOT grant a licence (it never produces a deletion event)")
+	}
+}
+
+func TestLicenseStripeHandler_CheckoutComplete_SetupModeIsSkipped(t *testing.T) {
+	ls := store.NewMemoryLicenseStore()
+	h := NewLicenseStripeHandler(ls)
+
+	raw := []byte(`{"id":"cs_setup","client_reference_id":"ck_setup","mode":"setup","customer":"cus_setup"}`)
+	event := stripe.Event{
+		ID:   "evt_setup",
+		Type: "checkout.session.completed",
+		Data: &stripe.EventData{Raw: raw},
+	}
+
+	if err := h.OnCheckoutComplete(context.Background(), event); err != nil {
+		t.Fatalf("setup-mode checkout should be skipped without error, got %v", err)
+	}
+	if paid, _ := ls.IsPaid(context.Background(), "ck_setup"); paid {
+		t.Fatal("setup-mode checkout must NOT grant a licence")
+	}
+}
+
+func TestLicenseStripeHandler_CheckoutComplete_SubscriptionIDImpliesSubscription(t *testing.T) {
+	// Belt-and-braces: if the event arrives with no mode (older API
+	// version, weird middleware) but does have a subscription field, we
+	// should still grant.
+	ls := store.NewMemoryLicenseStore()
+	h := NewLicenseStripeHandler(ls)
+
+	raw := []byte(`{"id":"cs_impl","client_reference_id":"ck_impl","subscription":"sub_impl","customer":"cus_impl"}`)
+	event := stripe.Event{
+		ID:   "evt_impl",
+		Type: "checkout.session.completed",
+		Data: &stripe.EventData{Raw: raw},
+	}
+
+	if err := h.OnCheckoutComplete(context.Background(), event); err != nil {
+		t.Fatalf("OnCheckoutComplete: %v", err)
+	}
+	if paid, _ := ls.IsPaid(context.Background(), "ck_impl"); !paid {
+		t.Fatal("presence of subscription id should be enough to grant")
+	}
+}
+
 // buildCheckoutSessionRaw builds a JSON body for a Stripe CheckoutSession
-// with the customer field as an object (the "expanded" wire shape).
+// with the customer field as an object (the "expanded" wire shape), in
+// subscription mode (the only mode the licence handler accepts).
 func buildCheckoutSessionRaw(t *testing.T, sessID, apiKey, email, customerID string) []byte {
 	t.Helper()
 	return []byte(fmt.Sprintf(
-		`{"id":%q,"client_reference_id":%q,"customer_email":%q,"customer":{"id":%q,"object":"customer"},"customer_details":{"email":%q}}`,
-		sessID, apiKey, email, customerID, email,
+		`{"id":%q,"client_reference_id":%q,"customer_email":%q,"mode":"subscription","subscription":%q,"customer":{"id":%q,"object":"customer"},"customer_details":{"email":%q}}`,
+		sessID, apiKey, email, "sub_"+sessID, customerID, email,
 	))
 }

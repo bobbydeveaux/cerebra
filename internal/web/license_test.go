@@ -22,11 +22,17 @@ func (a *alwaysOK) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// staticStore wraps a LicenseStore so tests can pass it to RequirePaid,
+// which expects a resolver func() rather than a value.
+func staticStore(ls store.LicenseStore) licenseStoreFunc {
+	return func() store.LicenseStore { return ls }
+}
+
 func TestRequirePaid_FreeTierEnabled_PassesThrough(t *testing.T) {
 	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "true")
 	ls := store.NewMemoryLicenseStore()
 	next := &alwaysOK{}
-	h := RequirePaid(ls)(next)
+	h := RequirePaid(staticStore(ls))(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
 	w := httptest.NewRecorder()
@@ -42,7 +48,7 @@ func TestRequirePaid_FreeTierEnabled_DefaultEnvVar(t *testing.T) {
 	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "")
 	ls := store.NewMemoryLicenseStore()
 	next := &alwaysOK{}
-	h := RequirePaid(ls)(next)
+	h := RequirePaid(staticStore(ls))(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
 	w := httptest.NewRecorder()
@@ -61,7 +67,7 @@ func TestRequirePaid_WallOn_PaidKey_PassesThrough(t *testing.T) {
 	}
 
 	next := &alwaysOK{}
-	h := RequirePaid(ls)(next)
+	h := RequirePaid(staticStore(ls))(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
 	req.Header.Set("Authorization", "Bearer ck_paid")
@@ -78,7 +84,7 @@ func TestRequirePaid_WallOn_FreeKey_402(t *testing.T) {
 	ls := store.NewMemoryLicenseStore()
 
 	next := &alwaysOK{}
-	h := RequirePaid(ls)(next)
+	h := RequirePaid(staticStore(ls))(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
 	req.Header.Set("Authorization", "Bearer ck_not_paid")
@@ -111,7 +117,7 @@ func TestRequirePaid_WallOn_MissingHeader_402(t *testing.T) {
 	ls := store.NewMemoryLicenseStore()
 
 	next := &alwaysOK{}
-	h := RequirePaid(ls)(next)
+	h := RequirePaid(staticStore(ls))(next)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
 	// No Authorization header.
@@ -134,7 +140,7 @@ func TestRequirePaid_WallOn_MalformedHeader_402(t *testing.T) {
 	}
 
 	next := &alwaysOK{}
-	h := RequirePaid(ls)(next)
+	h := RequirePaid(staticStore(ls))(next)
 
 	// Missing scheme — just the raw key.
 	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
@@ -157,7 +163,7 @@ func TestRequirePaid_BearerSchemeCaseInsensitive(t *testing.T) {
 		t.Fatalf("Grant: %v", err)
 	}
 	next := &alwaysOK{}
-	h := RequirePaid(ls)(next)
+	h := RequirePaid(staticStore(ls))(next)
 
 	for _, scheme := range []string{"Bearer ", "bearer ", "BEARER ", "BeArEr "} {
 		next.called = false
@@ -182,6 +188,74 @@ func TestRequirePaid_NilStore_PassesThrough(t *testing.T) {
 
 	if w.Code != http.StatusOK || !next.called {
 		t.Fatalf("nil store: want pass-through 200, got %d called=%v", w.Code, next.called)
+	}
+}
+
+func TestRequirePaid_QueryParamKey_PaidPasses(t *testing.T) {
+	// Browser EventSource cannot set Authorization headers, so we accept
+	// the API key as a `key` query param as a fallback.
+	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
+	ls := store.NewMemoryLicenseStore()
+	if err := ls.Grant(t.Context(), "ck_query", "q@x", "cus_query"); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	next := &alwaysOK{}
+	h := RequirePaid(staticStore(ls))(next)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?q=hi&key=ck_query", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !next.called {
+		t.Fatalf("query-param key: want 200, got %d called=%v body=%q", w.Code, next.called, w.Body.String())
+	}
+}
+
+func TestRequirePaid_QueryParamKey_HeaderTakesPrecedence(t *testing.T) {
+	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
+	ls := store.NewMemoryLicenseStore()
+	if err := ls.Grant(t.Context(), "ck_header", "h@x", "cus_header"); err != nil {
+		t.Fatalf("Grant: %v", err)
+	}
+	next := &alwaysOK{}
+	h := RequirePaid(staticStore(ls))(next)
+
+	// Header is the paid key; query is a different (free) key. Header
+	// should win and the request should pass.
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?q=hi&key=ck_free", nil)
+	req.Header.Set("Authorization", "Bearer ck_header")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !next.called {
+		t.Fatalf("header should win over query: want 200, got %d called=%v", w.Code, next.called)
+	}
+}
+
+func TestRequirePaid_LateBoundStore(t *testing.T) {
+	// The resolver pattern means a store wired in AFTER route registration
+	// (e.g. Server.WithLicenseStore) takes effect on the next request.
+	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
+	var ls store.LicenseStore
+	next := &alwaysOK{}
+	h := RequirePaid(func() store.LicenseStore { return ls })(next)
+
+	// First request: resolver returns nil → pass-through (no wall yet).
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pre-wire request should pass through, got %d", w.Code)
+	}
+
+	// Now wire the store late. Same request should be rejected.
+	ls = store.NewMemoryLicenseStore()
+	next.called = false
+	req = httptest.NewRequest(http.MethodGet, "/api/chat/stream", nil)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("post-wire request without auth should be 402, got %d", w.Code)
 	}
 }
 

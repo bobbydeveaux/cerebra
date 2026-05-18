@@ -81,19 +81,30 @@ func (h *licenseStripeHandler) OnCheckoutComplete(ctx context.Context, event str
 	if h.store == nil {
 		return errors.New("license store is nil")
 	}
-	apiKey, email, customerID, err := parseCheckoutSession(event)
+	sess, err := parseCheckoutSession(event)
 	if err != nil {
 		return fmt.Errorf("parse checkout session %s: %w", event.ID, err)
 	}
-	if apiKey == "" {
+	// Stripe fires checkout.session.completed for `payment` and `setup`
+	// Checkout Sessions too. Those will never produce a matching
+	// customer.subscription.deleted, so granting on them would create
+	// licences we can never revoke. Skip cleanly. We accept the event
+	// only if it is unambiguously a subscription — either by mode or by
+	// having a subscription_id attached. Anything else (payment / setup
+	// / unknown shape) is ignored with a log line.
+	if !isSubscriptionCheckout(sess) {
+		log.Printf("stripe: skipping checkout %s (mode=%q, subscription=%q): not a subscription session", event.ID, sess.Mode, sess.SubscriptionID)
+		return nil
+	}
+	if sess.APIKey == "" {
 		// client_reference_id was not set. We refuse to silently accept
 		// because there is no other way to bind the subscription to a
 		// Cerebra account — better to fail loudly so the signup flow
 		// gets fixed.
 		return fmt.Errorf("checkout session %s missing client_reference_id (cannot bind to api key)", event.ID)
 	}
-	log.Printf("stripe: granting license api_key=%s customer=%s", redactKey(apiKey), customerID)
-	return h.store.Grant(ctx, apiKey, email, customerID)
+	log.Printf("stripe: granting license api_key=%s customer=%s", redactKey(sess.APIKey), sess.CustomerID)
+	return h.store.Grant(ctx, sess.APIKey, sess.Email, sess.CustomerID)
 }
 
 func (h *licenseStripeHandler) OnSubscriptionDeleted(ctx context.Context, event stripe.Event) error {
@@ -121,10 +132,12 @@ type checkoutSessionMinimal struct {
 	ID                string `json:"id"`
 	ClientReferenceID string `json:"client_reference_id"`
 	CustomerEmail     string `json:"customer_email"`
-	// Customer arrives either as a string (the ID) or an object with an
-	// id field, depending on whether the event was expanded. We decode
-	// to json.RawMessage and resolve in parseCheckoutSession.
+	Mode              string `json:"mode"` // payment | setup | subscription
+	// Customer and Subscription arrive either as a string (the ID) or
+	// an object with an id field, depending on whether the event was
+	// expanded. We decode to json.RawMessage and resolve below.
 	Customer        json.RawMessage `json:"customer"`
+	Subscription    json.RawMessage `json:"subscription"`
 	CustomerDetails struct {
 		Email string `json:"email"`
 	} `json:"customer_details"`
@@ -135,21 +148,50 @@ type subscriptionMinimal struct {
 	Customer json.RawMessage `json:"customer"`
 }
 
-// parseCheckoutSession returns (apiKey, email, stripeCustomerID, err).
-func parseCheckoutSession(event stripe.Event) (string, string, string, error) {
+// parsedSession is the resolved view of a checkout.session.completed event.
+type parsedSession struct {
+	APIKey         string // client_reference_id
+	Email          string
+	CustomerID     string
+	Mode           string // "subscription" expected
+	SubscriptionID string
+}
+
+// parseCheckoutSession decodes the checkout session event into a flat
+// parsedSession the dispatcher can act on.
+func parseCheckoutSession(event stripe.Event) (parsedSession, error) {
 	var sess checkoutSessionMinimal
 	if err := json.Unmarshal(event.Data.Raw, &sess); err != nil {
-		return "", "", "", fmt.Errorf("unmarshal session: %w", err)
+		return parsedSession{}, fmt.Errorf("unmarshal session: %w", err)
 	}
 	email := sess.CustomerDetails.Email
 	if email == "" {
 		email = sess.CustomerEmail
 	}
-	customerID, err := decodeCustomerID(sess.Customer)
+	customerID, err := decodeIDField(sess.Customer)
 	if err != nil {
-		return "", "", "", err
+		return parsedSession{}, fmt.Errorf("customer: %w", err)
 	}
-	return sess.ClientReferenceID, email, customerID, nil
+	subscriptionID, err := decodeIDField(sess.Subscription)
+	if err != nil {
+		return parsedSession{}, fmt.Errorf("subscription: %w", err)
+	}
+	return parsedSession{
+		APIKey:         sess.ClientReferenceID,
+		Email:          email,
+		CustomerID:     customerID,
+		Mode:           sess.Mode,
+		SubscriptionID: subscriptionID,
+	}, nil
+}
+
+// isSubscriptionCheckout returns true when the parsed session looks like
+// a subscription checkout we should grant on. Stripe sets Mode to
+// "subscription" on subscription sessions, and a non-empty SubscriptionID
+// is a stronger signal still. Either condition is enough; both together
+// is the typical production case.
+func isSubscriptionCheckout(sess parsedSession) bool {
+	return sess.Mode == "subscription" || sess.SubscriptionID != ""
 }
 
 // parseSubscriptionCustomer pulls the Stripe customer ID out of a
@@ -159,13 +201,13 @@ func parseSubscriptionCustomer(event stripe.Event) (string, error) {
 	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
 		return "", fmt.Errorf("unmarshal subscription: %w", err)
 	}
-	return decodeCustomerID(sub.Customer)
+	return decodeIDField(sub.Customer)
 }
 
-// decodeCustomerID handles the two wire shapes Stripe uses for the
-// .customer field on events: a bare string ID ("cus_abc"), or an embedded
+// decodeIDField handles the two wire shapes Stripe uses for object refs
+// on events: a bare string ID ("cus_abc" / "sub_abc"), or an embedded
 // object ({"id":"cus_abc",...}).
-func decodeCustomerID(raw json.RawMessage) (string, error) {
+func decodeIDField(raw json.RawMessage) (string, error) {
 	raw = bytesTrim(raw)
 	if len(raw) == 0 || string(raw) == "null" {
 		return "", nil
