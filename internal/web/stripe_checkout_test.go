@@ -110,13 +110,15 @@ func TestCreateCheckoutReturnsURL(t *testing.T) {
 	}
 }
 
-func TestCreateCheckoutAcceptsEmptyBody(t *testing.T) {
+func TestCreateCheckoutRejectsEmptyBody(t *testing.T) {
+	// An empty body parses cleanly as the zero-value request, but the
+	// handler then refuses because client_reference_id is required —
+	// the licenseStripeHandler downstream errors on subscription events
+	// without a client reference, so we fail loud before charging the
+	// customer rather than minting an unbindable subscription.
 	t.Setenv("STRIPE_GROWTH_PRICE_ID", "price_growth_test_123")
 
-	client := &fakeCheckoutClient{
-		createSessionID:   "cs_empty_body",
-		createCheckoutURL: "https://checkout.stripe.com/pay/cs_empty_body",
-	}
+	client := &fakeCheckoutClient{}
 	srv := newCheckoutServerForTest(client)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(""))
@@ -124,14 +126,55 @@ func TestCreateCheckoutAcceptsEmptyBody(t *testing.T) {
 
 	srv.handleCreateCheckout(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("want 200 on empty body, got %d. body=%q", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 on empty body (no client_reference_id), got %d. body=%q", w.Code, w.Body.String())
 	}
-	if got := client.createCalls.Load(); got != 1 {
-		t.Errorf("CreateSubscriptionSession: want 1 call, got %d", got)
+	if got := client.createCalls.Load(); got != 0 {
+		t.Errorf("client should not have been called without client_reference_id, got %d calls", got)
 	}
-	if client.lastCreateOpts.ClientReferenceID != "" {
-		t.Errorf("expected empty client_reference_id on empty body, got %q", client.lastCreateOpts.ClientReferenceID)
+}
+
+func TestCreateCheckoutRejectsBlankClientReference(t *testing.T) {
+	// A body with whitespace-only client_reference_id is the same as
+	// empty for our purposes: refuse before calling Stripe.
+	t.Setenv("STRIPE_GROWTH_PRICE_ID", "price_growth_test_123")
+
+	client := &fakeCheckoutClient{}
+	srv := newCheckoutServerForTest(client)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{"client_reference_id":"   "}`))
+	w := httptest.NewRecorder()
+
+	srv.handleCreateCheckout(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 on whitespace client_reference_id, got %d. body=%q", w.Code, w.Body.String())
+	}
+	if got := client.createCalls.Load(); got != 0 {
+		t.Errorf("client should not have been called, got %d calls", got)
+	}
+}
+
+func TestCreateCheckoutRejectsTruncatedJSON(t *testing.T) {
+	// Truncated JSON like "{" returns io.ErrUnexpectedEOF from the
+	// json decoder. Earlier the handler silently treated that as an
+	// empty body and proceeded; that's wrong — malformed JSON must
+	// surface as 400 so callers find the bug.
+	t.Setenv("STRIPE_GROWTH_PRICE_ID", "price_growth_test_123")
+
+	client := &fakeCheckoutClient{}
+	srv := newCheckoutServerForTest(client)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{`))
+	w := httptest.NewRecorder()
+
+	srv.handleCreateCheckout(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 on truncated JSON, got %d. body=%q", w.Code, w.Body.String())
+	}
+	if got := client.createCalls.Load(); got != 0 {
+		t.Errorf("client should not have been called on truncated JSON, got %d calls", got)
 	}
 }
 
@@ -141,7 +184,7 @@ func TestCreateCheckoutMissingPriceID(t *testing.T) {
 	client := &fakeCheckoutClient{}
 	srv := newCheckoutServerForTest(client)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{"client_reference_id":"ck_user_42"}`))
 	w := httptest.NewRecorder()
 
 	srv.handleCreateCheckout(w, req)
@@ -160,7 +203,7 @@ func TestCreateCheckoutClientError(t *testing.T) {
 	client := &fakeCheckoutClient{createErr: errors.New("stripe boom")}
 	srv := newCheckoutServerForTest(client)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/create-checkout", strings.NewReader(`{"client_reference_id":"ck_user_42"}`))
 	w := httptest.NewRecorder()
 
 	srv.handleCreateCheckout(w, req)
@@ -275,7 +318,7 @@ func TestCheckoutEndpointsRouteRegistered(t *testing.T) {
 	defer ts.Close()
 
 	// POST /api/stripe/create-checkout
-	createReq, err := http.NewRequest(http.MethodPost, ts.URL+"/api/stripe/create-checkout", strings.NewReader(`{}`))
+	createReq, err := http.NewRequest(http.MethodPost, ts.URL+"/api/stripe/create-checkout", strings.NewReader(`{"client_reference_id":"ck_route_1"}`))
 	if err != nil {
 		t.Fatalf("new create request: %v", err)
 	}

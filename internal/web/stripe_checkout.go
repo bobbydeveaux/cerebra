@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -100,16 +101,28 @@ func (s *Server) handleCreateCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Body is optional. An unreadable / malformed body is the caller's
-	// fault (400); an empty body is fine (handled below).
+	// fault (400); a truly empty body is fine (handled below).
 	var req createCheckoutRequest
 	if r.Body != nil {
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil && !errors.Is(err, ErrEmptyBody) && !isEmptyJSONBody(err) {
+		if err := dec.Decode(&req); err != nil && !isEmptyBodyEOF(err) {
 			log.Printf("stripe: create-checkout decode body: %v", err)
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
+	}
+
+	clientRef := strings.TrimSpace(req.ClientReferenceID)
+	if clientRef == "" {
+		// licenseStripeHandler.OnCheckoutComplete errors out on
+		// subscriptions without a client_reference_id, so a session
+		// created without one would mint a paying customer who never
+		// gets LicenseStore.Grant. Refuse loudly here instead of after
+		// the customer has already paid.
+		log.Printf("stripe: create-checkout missing client_reference_id")
+		http.Error(w, "client_reference_id is required", http.StatusBadRequest)
+		return
 	}
 
 	client := s.checkoutClientOrDefault()
@@ -123,7 +136,7 @@ func (s *Server) handleCreateCheckout(w http.ResponseWriter, r *http.Request) {
 		PriceID:           priceID,
 		SuccessURL:        defaultCheckoutSuccessURL,
 		CancelURL:         defaultCheckoutCancelURL,
-		ClientReferenceID: strings.TrimSpace(req.ClientReferenceID),
+		ClientReferenceID: clientRef,
 		CustomerEmail:     strings.TrimSpace(req.CustomerEmail),
 	})
 	if err != nil {
@@ -254,21 +267,11 @@ func (c *stripeCheckoutClient) GetSession(_ context.Context, id string) (string,
 	return email, string(sess.Status), nil
 }
 
-// ErrEmptyBody is returned by callers when the request body is empty and
-// should be treated as the zero-value request. Kept here so handlers in
-// this package share the convention.
-var ErrEmptyBody = errors.New("empty request body")
-
-// isEmptyJSONBody returns true when a json.Decoder error is just EOF
-// against an empty body — this is the case when the caller does not send
-// a body at all, which we want to accept as the zero-value request.
-func isEmptyJSONBody(err error) bool {
-	if err == nil {
-		return false
-	}
-	// io.EOF or io.ErrUnexpectedEOF both happen with empty bodies; the
-	// json package wraps neither in a typed error, so a substring match
-	// is the most portable check.
-	msg := err.Error()
-	return msg == "EOF" || msg == "unexpected EOF"
+// isEmptyBodyEOF returns true when a json.Decoder error is an unwrapped
+// io.EOF — the case when the caller sent no body at all. Crucially,
+// io.ErrUnexpectedEOF (which is what truncated JSON like "{" produces)
+// is rejected so malformed payloads still surface as 400s rather than
+// being silently treated as the zero-value request.
+func isEmptyBodyEOF(err error) bool {
+	return errors.Is(err, io.EOF)
 }
