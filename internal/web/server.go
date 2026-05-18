@@ -19,22 +19,24 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	store    store.Store
-	embedder embedder.Embedder
-	pipeline *rag.Pipeline
-	cfg      *config.Config
-	tmpls    map[string]*template.Template
-	mux      *http.ServeMux
+	store         store.Store
+	embedder      embedder.Embedder
+	pipeline      *rag.Pipeline
+	cfg           *config.Config
+	tmpls         map[string]*template.Template
+	mux           *http.ServeMux
+	stripeHandler StripeEventHandler
 }
 
 func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *config.Config) *Server {
 	srv := &Server{
-		store:    s,
-		embedder: emb,
-		pipeline: p,
-		cfg:      cfg,
-		mux:      http.NewServeMux(),
-		tmpls:    make(map[string]*template.Template),
+		store:         s,
+		embedder:      emb,
+		pipeline:      p,
+		cfg:           cfg,
+		mux:           http.NewServeMux(),
+		tmpls:         make(map[string]*template.Template),
+		stripeHandler: loggingStripeHandler{},
 	}
 
 	funcMap := template.FuncMap{
@@ -68,6 +70,7 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 	srv.mux.HandleFunc("GET /api/brains/{id}", srv.handleBrainDetail)
 	srv.mux.HandleFunc("POST /api/search", srv.handleSearchAPI)
 	srv.mux.HandleFunc("GET /api/chat/stream", srv.handleChatStream)
+	srv.mux.HandleFunc("POST /api/stripe/webhook", srv.handleStripeWebhook)
 	srv.mux.Handle("GET /static/", http.FileServerFS(staticFS))
 
 	return srv
