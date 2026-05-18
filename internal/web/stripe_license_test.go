@@ -206,6 +206,33 @@ func TestStripeWebhook_EndToEnd_DispatchesToLicenseStore(t *testing.T) {
 	}
 }
 
+func TestLicenseStripeHandler_CheckoutComplete_MissingCustomerErrors(t *testing.T) {
+	ls := store.NewMemoryLicenseStore()
+	h := NewLicenseStripeHandler(ls)
+
+	// Subscription mode + client_reference_id + subscription id present,
+	// but customer is missing. We MUST refuse to grant — revocation only
+	// matches on customer id, so without one the entitlement would be
+	// unrevokeable.
+	raw := []byte(`{"id":"cs_nocust","client_reference_id":"ck_nocust","mode":"subscription","subscription":"sub_x"}`)
+	event := stripe.Event{
+		ID:   "evt_nocust",
+		Type: "checkout.session.completed",
+		Data: &stripe.EventData{Raw: raw},
+	}
+
+	err := h.OnCheckoutComplete(context.Background(), event)
+	if err == nil {
+		t.Fatal("missing customer should error")
+	}
+	if !strings.Contains(err.Error(), "customer") {
+		t.Errorf("error should mention customer, got %v", err)
+	}
+	if paid, _ := ls.IsPaid(context.Background(), "ck_nocust"); paid {
+		t.Error("must not grant an unrevokeable licence")
+	}
+}
+
 func TestLicenseStripeHandler_CheckoutComplete_PaymentModeIsSkipped(t *testing.T) {
 	ls := store.NewMemoryLicenseStore()
 	h := NewLicenseStripeHandler(ls)

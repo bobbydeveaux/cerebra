@@ -84,6 +84,34 @@ func TestMemoryLicenseStore_GrantWithNewCustomerDropsOldReverseIndex(t *testing.
 	}
 }
 
+func TestMemoryLicenseStore_GrantEvictsPriorKeyForSameCustomer(t *testing.T) {
+	// If the same Stripe customer pays again under a different
+	// client_reference_id, the old key MUST be evicted — otherwise both
+	// keys stay paid, and the later cancellation event only revokes one.
+	ctx := context.Background()
+	s := NewMemoryLicenseStore()
+
+	if err := s.Grant(ctx, "ck_old", "x@y", "cus_shared"); err != nil {
+		t.Fatalf("Grant ck_old: %v", err)
+	}
+	if err := s.Grant(ctx, "ck_new", "x@y", "cus_shared"); err != nil {
+		t.Fatalf("Grant ck_new: %v", err)
+	}
+	if paid, _ := s.IsPaid(ctx, "ck_old"); paid {
+		t.Error("ck_old should be evicted when cus_shared rebinds to ck_new")
+	}
+	if paid, _ := s.IsPaid(ctx, "ck_new"); !paid {
+		t.Error("ck_new should be paid")
+	}
+	// Revoking the customer should now clear ck_new.
+	if err := s.Revoke(ctx, "cus_shared"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if paid, _ := s.IsPaid(ctx, "ck_new"); paid {
+		t.Error("ck_new should be revoked")
+	}
+}
+
 func TestMemoryLicenseStore_EmptyApiKeyIsNeverPaid(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemoryLicenseStore()
@@ -150,5 +178,29 @@ func TestSQLiteStore_LicenseGrantRejectsEmptyKey(t *testing.T) {
 	s := testDB(t)
 	if err := s.Grant(context.Background(), "", "x@y", "cus_x"); err == nil {
 		t.Fatal("Grant with empty apiKey should fail")
+	}
+}
+
+func TestSQLiteStore_LicenseGrantEvictsPriorKeyForSameCustomer(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	if err := s.Grant(ctx, "ck_old", "x@y", "cus_shared"); err != nil {
+		t.Fatalf("Grant ck_old: %v", err)
+	}
+	if err := s.Grant(ctx, "ck_new", "x@y", "cus_shared"); err != nil {
+		t.Fatalf("Grant ck_new: %v", err)
+	}
+	if paid, _ := s.IsPaid(ctx, "ck_old"); paid {
+		t.Error("SQLite: ck_old should be evicted when cus_shared rebinds")
+	}
+	if paid, _ := s.IsPaid(ctx, "ck_new"); !paid {
+		t.Error("SQLite: ck_new should be paid")
+	}
+	if err := s.Revoke(ctx, "cus_shared"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if paid, _ := s.IsPaid(ctx, "ck_new"); paid {
+		t.Error("SQLite: ck_new should be revoked")
 	}
 }

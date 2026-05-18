@@ -103,6 +103,14 @@ func (h *licenseStripeHandler) OnCheckoutComplete(ctx context.Context, event str
 		// gets fixed.
 		return fmt.Errorf("checkout session %s missing client_reference_id (cannot bind to api key)", event.ID)
 	}
+	if sess.CustomerID == "" {
+		// Subscriptions without a customer ID cannot be revoked later —
+		// customer.subscription.deleted only carries the customer ID, so
+		// an empty customer here would mint an unrevokeable licence.
+		// Fail loudly so Stripe retries (the event normally always has
+		// a customer attached for subscription mode).
+		return fmt.Errorf("checkout session %s missing customer id (entitlement would be unrevokeable)", event.ID)
+	}
 	log.Printf("stripe: granting license api_key=%s customer=%s", redactKey(sess.APIKey), sess.CustomerID)
 	return h.store.Grant(ctx, sess.APIKey, sess.Email, sess.CustomerID)
 }

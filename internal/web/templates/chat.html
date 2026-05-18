@@ -9,10 +9,77 @@
         <input type="text" id="chat-input" placeholder="Ask Jor-El about the codebase..." autofocus>
         <button type="submit">Send</button>
     </form>
+
+    <details class="api-key-row" style="margin-top: 8px; font-size: 0.85em;">
+        <summary id="api-key-summary">API key</summary>
+        <div style="margin-top: 6px;">
+            <input type="password" id="api-key-input" placeholder="ck_..." style="width: 70%;">
+            <button type="button" onclick="saveApiKey()">Save</button>
+            <button type="button" onclick="clearApiKey()">Clear</button>
+            <div id="api-key-status" style="margin-top: 4px; color: #666;"></div>
+        </div>
+    </details>
 </div>
 
 <script>
 var chatHistory = [];
+
+function refreshApiKeyStatus() {
+    var status = document.getElementById('api-key-status');
+    var summary = document.getElementById('api-key-summary');
+    if (!status || !summary) return;
+    try {
+        var k = window.localStorage.getItem('cerebra_api_key');
+        if (k) {
+            status.textContent = 'Stored: ' + k.slice(0, 4) + '...' + k.slice(-4);
+            summary.textContent = 'API key (saved)';
+        } else {
+            status.textContent = 'No key stored. Required when CEREBRA_FREE_TIER_ENABLED=false.';
+            summary.textContent = 'API key';
+        }
+    } catch (_) {
+        status.textContent = 'localStorage unavailable in this browser.';
+    }
+}
+
+function saveApiKey() {
+    var input = document.getElementById('api-key-input');
+    if (!input) return;
+    var k = input.value.trim();
+    try {
+        if (k) {
+            window.localStorage.setItem('cerebra_api_key', k);
+        } else {
+            window.localStorage.removeItem('cerebra_api_key');
+        }
+        input.value = '';
+    } catch (_) {}
+    refreshApiKeyStatus();
+}
+
+function clearApiKey() {
+    try { window.localStorage.removeItem('cerebra_api_key'); } catch (_) {}
+    refreshApiKeyStatus();
+}
+
+// On page load: if ?key=... is in the URL (e.g. ?key=ck_... from a
+// Stripe redirect or signup email link), persist it and strip it back
+// out of the address bar so the key isn't sat in history / referrers.
+(function ingestKeyFromUrl() {
+    try {
+        var params = new URLSearchParams(window.location.search);
+        var fromUrl = params.get('key');
+        if (fromUrl) {
+            window.localStorage.setItem('cerebra_api_key', fromUrl);
+            params.delete('key');
+            var clean = window.location.pathname;
+            var q = params.toString();
+            if (q) clean += '?' + q;
+            window.history.replaceState({}, '', clean);
+        }
+    } catch (_) {}
+    refreshApiKeyStatus();
+})();
 
 function sendMessage(e) {
     e.preventDefault();

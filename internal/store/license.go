@@ -21,6 +21,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -76,7 +77,13 @@ func NewMemoryLicenseStore() *MemoryLicenseStore {
 	}
 }
 
-// Grant inserts or updates the entitlement for apiKey.
+// Grant inserts or updates the entitlement for apiKey, and enforces the
+// invariant that at most one apiKey is bound to a given Stripe customer
+// at any time. If the customer previously paid for a different apiKey
+// (e.g. they changed their Cerebra key between billing cycles), the old
+// entitlement is evicted as part of the grant. Symmetrically, if this
+// apiKey was previously bound to a different customer, the stale reverse
+// index is cleared.
 func (s *MemoryLicenseStore) Grant(_ context.Context, apiKey, email, stripeCustomerID string) error {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
@@ -84,12 +91,21 @@ func (s *MemoryLicenseStore) Grant(_ context.Context, apiKey, email, stripeCusto
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	// If this apiKey was previously bound to a different customer, drop
-	// the stale reverse-index entry so Revoke for the old customer
-	// becomes a no-op rather than evicting the new licence.
+	// the stale reverse-index entry.
 	if prev, ok := s.byKey[apiKey]; ok && prev.StripeCustomerID != "" && prev.StripeCustomerID != stripeCustomerID {
 		delete(s.byCustomer, prev.StripeCustomerID)
 	}
+	// If this customer was previously bound to a different apiKey, evict
+	// that old apiKey — cancellation events only carry the customer id,
+	// so we MUST keep customer→apiKey as a single source of truth.
+	if stripeCustomerID != "" {
+		if prevKey, ok := s.byCustomer[stripeCustomerID]; ok && prevKey != apiKey {
+			delete(s.byKey, prevKey)
+		}
+	}
+
 	s.byKey[apiKey] = License{
 		APIKey:           apiKey,
 		Email:            email,
@@ -138,21 +154,44 @@ func (s *MemoryLicenseStore) IsPaid(_ context.Context, apiKey string) (bool, err
 // LicenseStore interface alongside Store. Schema lives in schema.go.
 
 // Grant inserts or updates the entitlement for apiKey, persisted in the
-// licenses table.
+// licenses table. Mirrors MemoryLicenseStore.Grant's invariant: at most
+// one apiKey may be bound to a given stripe_customer_id at any time. We
+// can't rely on a UNIQUE constraint on stripe_customer_id because empty
+// strings collide; so the eviction is explicit and runs in a
+// transaction with the upsert.
 func (s *SQLiteStore) Grant(ctx context.Context, apiKey, email, stripeCustomerID string) error {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return errors.New("license: apiKey is required")
 	}
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Evict any other apiKey already bound to this customer. Restricted
+	// to non-empty customer IDs so an empty bucket doesn't sweep
+	// unrelated rows.
+	if stripeCustomerID != "" {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM licenses WHERE stripe_customer_id = ? AND api_key <> ?`,
+			stripeCustomerID, apiKey); err != nil {
+			return fmt.Errorf("evicting prior key for customer: %w", err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO licenses (api_key, email, stripe_customer_id, granted_at)
 		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(api_key) DO UPDATE SET
 		   email=excluded.email,
 		   stripe_customer_id=excluded.stripe_customer_id,
 		   granted_at=CURRENT_TIMESTAMP`,
-		apiKey, email, stripeCustomerID)
-	return err
+		apiKey, email, stripeCustomerID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // Revoke removes the row whose stripe_customer_id matches.
