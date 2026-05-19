@@ -121,6 +121,15 @@ CREATE TABLE IF NOT EXISTS licenses (
 );
 
 CREATE INDEX IF NOT EXISTS idx_licenses_stripe_customer ON licenses(stripe_customer_id);
+
+-- customer_events is a per-Stripe-customer high-watermark used to reject
+-- out-of-order Stripe webhook events (Codex pass 3 [P2]). last_event_at
+-- is Stripe's event.Created (unix seconds). It survives Revoke so a
+-- delayed grant for the same customer cannot regrant a cancelled key.
+CREATE TABLE IF NOT EXISTS customer_events (
+    stripe_customer_id TEXT PRIMARY KEY,
+    last_event_at      INTEGER NOT NULL
+);
 `
 
 const activitySchemaSQL = `

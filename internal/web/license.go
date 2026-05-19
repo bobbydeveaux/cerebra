@@ -67,10 +67,14 @@ type licenseStoreFunc func() store.LicenseStore
 // resolver returns nil OR the free-tier env var is on, the middleware is
 // a transparent pass-through.
 //
-// The API key may arrive in either an `Authorization: Bearer <key>`
-// header (preferred, REST clients) or a `key=<key>` query parameter
-// (the browser chat page, which uses EventSource and so cannot set
-// arbitrary headers). The header wins if both are present.
+// The API key MUST arrive in an `Authorization: Bearer <key>` header.
+// Earlier versions of this middleware accepted a `?key=<key>` query
+// parameter as a fallback for EventSource consumers — that path was
+// removed in response to Codex pass 3 [P1] because URLs leak into
+// browser history, proxy/access logs, and Referer headers. The browser
+// chat page now uses `fetch()` + ReadableStream so it can carry the
+// Authorization header directly; other consumers should do the same or
+// proxy through a server-side endpoint that holds the key.
 func RequirePaid(resolve licenseStoreFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,15 +113,12 @@ func RequirePaid(resolve licenseStoreFunc) func(http.Handler) http.Handler {
 	}
 }
 
-// extractAPIKey reads the Cerebra API key from the request. It tries the
-// Authorization header first (the canonical place for REST clients) and
-// falls back to the `key` query parameter for browser EventSource flows
-// that cannot set arbitrary headers.
+// extractAPIKey reads the Cerebra API key from the request. The only
+// accepted source is the `Authorization: Bearer <key>` header — the
+// previously supported `?key=<key>` query parameter was removed because
+// URLs leak through logs and history (Codex pass 3 [P1]).
 func extractAPIKey(r *http.Request) string {
-	if v := bearerToken(r.Header.Get("Authorization")); v != "" {
-		return v
-	}
-	return strings.TrimSpace(r.URL.Query().Get("key"))
+	return bearerToken(r.Header.Get("Authorization"))
 }
 
 // bearerToken extracts the token from a "Bearer <token>" Authorization

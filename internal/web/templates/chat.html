@@ -62,24 +62,14 @@ function clearApiKey() {
     refreshApiKeyStatus();
 }
 
-// On page load: if ?key=... is in the URL (e.g. ?key=ck_... from a
-// Stripe redirect or signup email link), persist it and strip it back
-// out of the address bar so the key isn't sat in history / referrers.
-(function ingestKeyFromUrl() {
-    try {
-        var params = new URLSearchParams(window.location.search);
-        var fromUrl = params.get('key');
-        if (fromUrl) {
-            window.localStorage.setItem('cerebra_api_key', fromUrl);
-            params.delete('key');
-            var clean = window.location.pathname;
-            var q = params.toString();
-            if (q) clean += '?' + q;
-            window.history.replaceState({}, '', clean);
-        }
-    } catch (_) {}
-    refreshApiKeyStatus();
-})();
+// Codex pass 3 [P1]: do NOT ingest the API key from the URL. Query strings
+// land in browser history, server access logs, and Referer headers, so a
+// `?key=ck_...` landing page is a leak surface even if JS strips it after
+// the fact. Operators who want to hand off a key after a Stripe redirect
+// should land users on a dedicated welcome page that prompts for the key
+// (or POSTs it to a session endpoint over HTTPS) — that flow is out of
+// scope for the chat page itself.
+refreshApiKeyStatus();
 
 function sendMessage(e) {
     e.preventDefault();
@@ -104,39 +94,77 @@ function sendMessage(e) {
     input.value = '';
     messages.scrollTop = messages.scrollHeight;
 
-    // Build URL with history for context
+    // Build URL with history for context. The API key NEVER appears in the
+    // URL — Codex pass 3 [P1] flagged URL-borne credentials as a leak risk
+    // (logs, history, referrers). We use fetch() + ReadableStream so the
+    // request can carry an `Authorization: Bearer` header, which neither
+    // EventSource nor a query param can match for confidentiality.
     var url = '/api/chat/stream?q=' + encodeURIComponent(query);
     if (chatHistory.length > 1) {
         url += '&history=' + encodeURIComponent(JSON.stringify(chatHistory.slice(0, -1)));
     }
-    // EventSource cannot send Authorization headers, so we pass the
-    // Cerebra API key via the `key` query param when the wall is on
-    // (CEREBRA_FREE_TIER_ENABLED=false). Stored in localStorage so the
-    // user only pastes it once.
+
+    var headers = { 'Accept': 'text/event-stream' };
     try {
         var cerebraKey = window.localStorage.getItem('cerebra_api_key');
         if (cerebraKey) {
-            url += '&key=' + encodeURIComponent(cerebraKey);
+            headers['Authorization'] = 'Bearer ' + cerebraKey;
         }
     } catch (_) { /* localStorage may be disabled; fall through */ }
 
-    // Stream response
     var fullResponse = '';
-    const evtSource = new EventSource(url);
-    evtSource.onmessage = function(event) {
-        if (event.data === '[DONE]') {
-            evtSource.close();
-            chatHistory.push({role: 'assistant', content: fullResponse});
-            return;
-        }
-        fullResponse += event.data;
-        assistantMsg.textContent = fullResponse;
-        messages.scrollTop = messages.scrollHeight;
-    };
-    evtSource.onerror = function() {
-        evtSource.close();
+    var controller = new AbortController();
+
+    function finalise() {
         if (fullResponse) chatHistory.push({role: 'assistant', content: fullResponse});
-    };
+    }
+
+    fetch(url, { method: 'GET', headers: headers, signal: controller.signal })
+        .then(function(resp) {
+            if (!resp.ok || !resp.body) {
+                assistantMsg.textContent = 'Error: ' + resp.status + ' ' + resp.statusText;
+                return;
+            }
+            var reader = resp.body.getReader();
+            var decoder = new TextDecoder('utf-8');
+            var buffer = '';
+            function pump() {
+                return reader.read().then(function(result) {
+                    if (result.done) {
+                        finalise();
+                        return;
+                    }
+                    buffer += decoder.decode(result.value, { stream: true });
+                    // Server-sent events are delimited by a blank line; each
+                    // event has zero or more `data:` lines. We rebuild that
+                    // here because fetch() doesn't parse SSE for us.
+                    var idx;
+                    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+                        var rawEvent = buffer.slice(0, idx);
+                        buffer = buffer.slice(idx + 2);
+                        var dataLines = rawEvent.split('\n')
+                            .filter(function(l) { return l.indexOf('data:') === 0; })
+                            .map(function(l) { return l.slice(5).replace(/^ /, ''); });
+                        if (dataLines.length === 0) continue;
+                        var data = dataLines.join('\n');
+                        if (data === '[DONE]') {
+                            controller.abort();
+                            finalise();
+                            return;
+                        }
+                        fullResponse += data;
+                        assistantMsg.textContent = fullResponse;
+                        messages.scrollTop = messages.scrollHeight;
+                    }
+                    return pump();
+                });
+            }
+            return pump();
+        })
+        .catch(function(err) {
+            if (err && err.name === 'AbortError') return;
+            finalise();
+        });
 }
 </script>
 {{end}}

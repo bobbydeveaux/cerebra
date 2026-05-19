@@ -111,8 +111,12 @@ func (h *licenseStripeHandler) OnCheckoutComplete(ctx context.Context, event str
 		// a customer attached for subscription mode).
 		return fmt.Errorf("checkout session %s missing customer id (entitlement would be unrevokeable)", event.ID)
 	}
-	log.Printf("stripe: granting license api_key=%s customer=%s", redactKey(sess.APIKey), sess.CustomerID)
-	return h.store.Grant(ctx, sess.APIKey, sess.Email, sess.CustomerID)
+	log.Printf("stripe: granting license api_key=%s customer=%s event_created=%d", redactKey(sess.APIKey), sess.CustomerID, event.Created)
+	// event.Created lets the store reject delayed/out-of-order events —
+	// see LicenseStore.Grant. A canceled subscription whose delayed
+	// checkout.completed shows up later would otherwise regrant access
+	// (Codex pass 3 [P2]).
+	return h.store.Grant(ctx, sess.APIKey, sess.Email, sess.CustomerID, event.Created)
 }
 
 func (h *licenseStripeHandler) OnSubscriptionDeleted(ctx context.Context, event stripe.Event) error {
@@ -126,8 +130,8 @@ func (h *licenseStripeHandler) OnSubscriptionDeleted(ctx context.Context, event 
 	if customerID == "" {
 		return fmt.Errorf("subscription deletion %s missing customer id", event.ID)
 	}
-	log.Printf("stripe: revoking license customer=%s", customerID)
-	return h.store.Revoke(ctx, customerID)
+	log.Printf("stripe: revoking license customer=%s event_created=%d", customerID, event.Created)
+	return h.store.Revoke(ctx, customerID, event.Created)
 }
 
 // checkoutSessionMinimal is a minimal projection of CheckoutSession used

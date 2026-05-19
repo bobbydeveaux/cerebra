@@ -62,7 +62,7 @@ func TestRequirePaid_FreeTierEnabled_DefaultEnvVar(t *testing.T) {
 func TestRequirePaid_WallOn_PaidKey_PassesThrough(t *testing.T) {
 	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
 	ls := store.NewMemoryLicenseStore()
-	if err := ls.Grant(t.Context(), "ck_paid", "p@x", "cus_paid"); err != nil {
+	if err := ls.Grant(t.Context(), "ck_paid", "p@x", "cus_paid", 0); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestRequirePaid_WallOn_MissingHeader_402(t *testing.T) {
 func TestRequirePaid_WallOn_MalformedHeader_402(t *testing.T) {
 	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
 	ls := store.NewMemoryLicenseStore()
-	if err := ls.Grant(t.Context(), "ck_paid", "p@x", "cus_paid"); err != nil {
+	if err := ls.Grant(t.Context(), "ck_paid", "p@x", "cus_paid", 0); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 
@@ -159,7 +159,7 @@ func TestRequirePaid_WallOn_MalformedHeader_402(t *testing.T) {
 func TestRequirePaid_BearerSchemeCaseInsensitive(t *testing.T) {
 	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
 	ls := store.NewMemoryLicenseStore()
-	if err := ls.Grant(t.Context(), "ck_case", "p@x", "cus_case"); err != nil {
+	if err := ls.Grant(t.Context(), "ck_case", "p@x", "cus_case", 0); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	next := &alwaysOK{}
@@ -191,12 +191,14 @@ func TestRequirePaid_NilStore_PassesThrough(t *testing.T) {
 	}
 }
 
-func TestRequirePaid_QueryParamKey_PaidPasses(t *testing.T) {
-	// Browser EventSource cannot set Authorization headers, so we accept
-	// the API key as a `key` query param as a fallback.
+func TestRequirePaid_QueryParamKey_IsRejected(t *testing.T) {
+	// Codex pass 3 [P1]: the `?key=<key>` fallback was removed because
+	// URLs leak through logs and history. A request that only carries
+	// the API key via the query string must be rejected, even if the
+	// key is otherwise valid.
 	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
 	ls := store.NewMemoryLicenseStore()
-	if err := ls.Grant(t.Context(), "ck_query", "q@x", "cus_query"); err != nil {
+	if err := ls.Grant(t.Context(), "ck_query", "q@x", "cus_query", 0); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	next := &alwaysOK{}
@@ -206,29 +208,35 @@ func TestRequirePaid_QueryParamKey_PaidPasses(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK || !next.called {
-		t.Fatalf("query-param key: want 200, got %d called=%v body=%q", w.Code, next.called, w.Body.String())
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("query-param-only auth: want 402, got %d body=%q", w.Code, w.Body.String())
+	}
+	if next.called {
+		t.Fatal("downstream must not run when auth arrives only via query string")
 	}
 }
 
-func TestRequirePaid_QueryParamKey_HeaderTakesPrecedence(t *testing.T) {
+func TestRequirePaid_HeaderAuthIgnoresQueryString(t *testing.T) {
+	// A request carrying both a valid Authorization header AND an
+	// (unrelated) `key=` query value should still authorize — the query
+	// is now ignored, not consulted.
 	t.Setenv("CEREBRA_FREE_TIER_ENABLED", "false")
 	ls := store.NewMemoryLicenseStore()
-	if err := ls.Grant(t.Context(), "ck_header", "h@x", "cus_header"); err != nil {
+	if err := ls.Grant(t.Context(), "ck_header", "h@x", "cus_header", 0); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	next := &alwaysOK{}
 	h := RequirePaid(staticStore(ls))(next)
 
-	// Header is the paid key; query is a different (free) key. Header
-	// should win and the request should pass.
+	// Header is the paid key; query is a different (free) key. The header
+	// wins and the query is ignored entirely.
 	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?q=hi&key=ck_free", nil)
 	req.Header.Set("Authorization", "Bearer ck_header")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
 	if w.Code != http.StatusOK || !next.called {
-		t.Fatalf("header should win over query: want 200, got %d called=%v", w.Code, next.called)
+		t.Fatalf("header auth should still work with unrelated query: want 200, got %d called=%v", w.Code, next.called)
 	}
 }
 

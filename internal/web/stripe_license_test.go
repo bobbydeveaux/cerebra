@@ -122,7 +122,7 @@ func TestLicenseStripeHandler_CheckoutComplete_MissingClientReferenceID_Errors(t
 
 func TestLicenseStripeHandler_SubscriptionDeleted_RevokesLicense(t *testing.T) {
 	ls := store.NewMemoryLicenseStore()
-	if err := ls.Grant(context.Background(), "ck_carol", "c@x", "cus_carol"); err != nil {
+	if err := ls.Grant(context.Background(), "ck_carol", "c@x", "cus_carol", 0); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
 	h := NewLicenseStripeHandler(ls)
