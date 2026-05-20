@@ -111,6 +111,20 @@ func (h *licenseStripeHandler) OnCheckoutComplete(ctx context.Context, event str
 		// a customer attached for subscription mode).
 		return fmt.Errorf("checkout session %s missing customer id (entitlement would be unrevokeable)", event.ID)
 	}
+	// Codex pass 4 [P2]: async payment methods (SEPA, BACS, OXXO, etc.)
+	// produce a checkout.session.completed with payment_status="unpaid"
+	// BEFORE the underlying payment clears. Granting here would entitle
+	// a user before they have paid, and a later async_payment_failed
+	// would orphan that grant because we have no per-subscription
+	// revocation path (only per-customer). The fulfillment signal for
+	// async payments is checkout.session.async_payment_succeeded, which
+	// the webhook dispatcher routes back through this same handler with
+	// payment_status="paid". Return nil (no retry) — Stripe will deliver
+	// the success event when funds clear.
+	if !isPaymentCleared(sess) {
+		log.Printf("stripe: deferring checkout %s (payment_status=%q): awaiting async payment clearance", event.ID, sess.PaymentStatus)
+		return nil
+	}
 	log.Printf("stripe: granting license api_key=%s customer=%s event_created=%d", redactKey(sess.APIKey), sess.CustomerID, event.Created)
 	// event.Created lets the store reject delayed/out-of-order events —
 	// see LicenseStore.Grant. A canceled subscription whose delayed
@@ -144,7 +158,8 @@ type checkoutSessionMinimal struct {
 	ID                string `json:"id"`
 	ClientReferenceID string `json:"client_reference_id"`
 	CustomerEmail     string `json:"customer_email"`
-	Mode              string `json:"mode"` // payment | setup | subscription
+	Mode              string `json:"mode"`           // payment | setup | subscription
+	PaymentStatus     string `json:"payment_status"` // paid | unpaid | no_payment_required
 	// Customer and Subscription arrive either as a string (the ID) or
 	// an object with an id field, depending on whether the event was
 	// expanded. We decode to json.RawMessage and resolve below.
@@ -167,6 +182,13 @@ type parsedSession struct {
 	CustomerID     string
 	Mode           string // "subscription" expected
 	SubscriptionID string
+	// PaymentStatus is the Stripe payment_status field. For card-only
+	// subscriptions this is "paid" immediately on completion. For async
+	// payment methods (SEPA debit, BACS, OXXO, etc.) Stripe fires
+	// checkout.session.completed with payment_status="unpaid" first, then
+	// emits checkout.session.async_payment_succeeded or
+	// async_payment_failed later. We MUST only grant on cleared payments.
+	PaymentStatus string
 }
 
 // parseCheckoutSession decodes the checkout session event into a flat
@@ -194,7 +216,38 @@ func parseCheckoutSession(event stripe.Event) (parsedSession, error) {
 		CustomerID:     customerID,
 		Mode:           sess.Mode,
 		SubscriptionID: subscriptionID,
+		PaymentStatus:  sess.PaymentStatus,
 	}, nil
+}
+
+// isPaymentCleared returns true when the parsed checkout session's
+// payment_status is consistent with a fulfilled payment. Stripe sets:
+//
+//   - "paid"                — the standard cleared case for card
+//                              subscriptions (synchronous capture).
+//   - "no_payment_required" — used for trials and 100%-discount coupons
+//                              where Stripe still considers the session
+//                              valid for fulfillment.
+//   - "unpaid"              — async payment method (SEPA / BACS / OXXO /
+//                              etc.) has been initiated but the payment
+//                              has not cleared. We MUST NOT grant on this;
+//                              the fulfillment signal arrives later in
+//                              checkout.session.async_payment_succeeded.
+//
+// Empty / absent payment_status is treated as cleared for backwards
+// compatibility. Stripe started emitting payment_status reliably long
+// before this code was written, so absence is overwhelmingly a test
+// fixture or an older account API version — and the upstream account
+// configuration controls whether async payment methods can show up at
+// all. Defaulting absent → cleared keeps existing card-only flows
+// working without forcing every fixture to set the field.
+func isPaymentCleared(sess parsedSession) bool {
+	switch sess.PaymentStatus {
+	case "", "paid", "no_payment_required":
+		return true
+	default:
+		return false
+	}
 }
 
 // isSubscriptionCheckout returns true when the parsed session looks like
@@ -333,6 +386,26 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "handler error", http.StatusInternalServerError)
 			return
 		}
+	case "checkout.session.async_payment_succeeded":
+		// Async payment methods (SEPA, BACS, OXXO, etc.) clear out of band.
+		// When the funds arrive, Stripe re-delivers the session shape with
+		// payment_status="paid" under this event type. The grant logic is
+		// identical to checkout.session.completed for cleared payments —
+		// route through the same handler so the path stays uniform and
+		// the existing parsing / customer / event-ordering checks all apply.
+		log.Printf("stripe: dispatching checkout.session.async_payment_succeeded id=%s", event.ID)
+		if err := handler.OnCheckoutComplete(r.Context(), event); err != nil {
+			log.Printf("stripe: OnCheckoutComplete (async_payment_succeeded): %v", err)
+			http.Error(w, "handler error", http.StatusInternalServerError)
+			return
+		}
+	case "checkout.session.async_payment_failed":
+		// The async payment did not clear. The earlier
+		// checkout.session.completed for the same session would have been
+		// deferred (payment_status="unpaid" → no grant), so there is
+		// nothing to revoke. Log for visibility and acknowledge the event
+		// so Stripe stops retrying.
+		log.Printf("stripe: acknowledging checkout.session.async_payment_failed id=%s", event.ID)
 	case "customer.subscription.deleted":
 		log.Printf("stripe: dispatching customer.subscription.deleted id=%s", event.ID)
 		if err := handler.OnSubscriptionDeleted(r.Context(), event); err != nil {
