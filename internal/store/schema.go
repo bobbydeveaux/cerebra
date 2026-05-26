@@ -112,6 +112,26 @@ CREATE VIRTUAL TABLE IF NOT EXISTS agent_messages_fts USING fts5(
 );
 `
 
+const licenseSchemaSQL = `
+CREATE TABLE IF NOT EXISTS licenses (
+    api_key            TEXT PRIMARY KEY,
+    email              TEXT NOT NULL DEFAULT '',
+    stripe_customer_id TEXT NOT NULL DEFAULT '',
+    granted_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_licenses_stripe_customer ON licenses(stripe_customer_id);
+
+-- customer_events is a per-Stripe-customer high-watermark used to reject
+-- out-of-order Stripe webhook events (Codex pass 3 [P2]). last_event_at
+-- is Stripe's event.Created (unix seconds). It survives Revoke so a
+-- delayed grant for the same customer cannot regrant a cancelled key.
+CREATE TABLE IF NOT EXISTS customer_events (
+    stripe_customer_id TEXT PRIMARY KEY,
+    last_event_at      INTEGER NOT NULL
+);
+`
+
 const activitySchemaSQL = `
 CREATE TABLE IF NOT EXISTS brain_activity (
     brain_id    TEXT NOT NULL,

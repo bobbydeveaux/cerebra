@@ -194,6 +194,17 @@ func (s *SQLiteStore) initSchema() error {
 		}
 	}
 
+	// Create licenses table (paid-tier gating, agentops-012)
+	for _, stmt := range strings.Split(licenseSchemaSQL, ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("executing licenses schema: %w\nSQL: %s", err, stmt)
+		}
+	}
+
 	// Create brain_activity table
 	for _, stmt := range strings.Split(activitySchemaSQL, ";") {
 		stmt = strings.TrimSpace(stmt)

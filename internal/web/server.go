@@ -20,12 +20,25 @@ var staticFS embed.FS
 
 type Server struct {
 	store         store.Store
+	licenseStore  store.LicenseStore
 	embedder      embedder.Embedder
 	pipeline      *rag.Pipeline
 	cfg           *config.Config
 	tmpls         map[string]*template.Template
 	mux           *http.ServeMux
 	stripeHandler StripeEventHandler
+}
+
+// WithLicenseStore turns on paid-tier gating by wiring a LicenseStore into
+// the server. The returned Server uses the store both as the source of
+// truth for RequirePaid and as the target of the Stripe webhook handler.
+// Pass nil to leave the wall down (free-tier-only behaviour).
+func (s *Server) WithLicenseStore(licenses store.LicenseStore) *Server {
+	s.licenseStore = licenses
+	if licenses != nil {
+		s.stripeHandler = NewLicenseStripeHandler(licenses)
+	}
+	return s
 }
 
 func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *config.Config) *Server {
@@ -37,6 +50,14 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 		mux:           http.NewServeMux(),
 		tmpls:         make(map[string]*template.Template),
 		stripeHandler: loggingStripeHandler{},
+	}
+	// The concrete *SQLiteStore satisfies LicenseStore via the methods
+	// added in agentops-012. If the caller passes a Store that does not
+	// also implement LicenseStore (e.g. a test double), the licence
+	// layer stays disabled and RequirePaid becomes a pass-through.
+	if licenses, ok := s.(store.LicenseStore); ok {
+		srv.licenseStore = licenses
+		srv.stripeHandler = NewLicenseStripeHandler(licenses)
 	}
 
 	funcMap := template.FuncMap{
@@ -69,7 +90,15 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 	srv.mux.HandleFunc("GET /brains", srv.handleBrains)
 	srv.mux.HandleFunc("GET /api/brains/{id}", srv.handleBrainDetail)
 	srv.mux.HandleFunc("POST /api/search", srv.handleSearchAPI)
-	srv.mux.HandleFunc("GET /api/chat/stream", srv.handleChatStream)
+	// /api/chat/stream is the paid-tier gated endpoint. RequirePaid is a
+	// transparent pass-through when CEREBRA_FREE_TIER_ENABLED is unset or
+	// "true" (the default), so local dev keeps working without Stripe.
+	// The resolver pattern means WithLicenseStore can be called after
+	// NewServer and the route picks up the new store on the next request.
+	chatStream := http.HandlerFunc(srv.handleChatStream)
+	srv.mux.Handle("GET /api/chat/stream", RequirePaid(func() store.LicenseStore {
+		return srv.licenseStore
+	})(chatStream))
 	srv.mux.HandleFunc("POST /api/stripe/webhook", srv.handleStripeWebhook)
 	srv.mux.Handle("GET /static/", http.FileServerFS(staticFS))
 
