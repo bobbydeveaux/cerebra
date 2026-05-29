@@ -735,8 +735,12 @@ embed_batch_size: 32
 - `testdata/git/` — pre-seeded git log for testing git history extraction
 
 ### Running Tests
+Cerebra requires the `sqlite_fts5` build tag (FTS5 in `mattn/go-sqlite3` is gated behind it).
+Always prefer `make test` / `make vet`; the Makefile sets the tag for you.
+
 ```bash
-go test ./...                      # all unit tests
-go test ./integration/...          # integration tests (requires Ollama running)
-go test -run TestChunker ./internal/chunker/...   # single test
+make test                                                       # all unit tests with sqlite_fts5
+make vet                                                        # go vet with sqlite_fts5
+go test -tags sqlite_fts5 ./integration/...                     # integration tests (requires Ollama running)
+go test -tags sqlite_fts5 -run TestChunker ./internal/chunker/  # single test
 ```
