@@ -1,0 +1,309 @@
+// Package web — Stripe Checkout Session create + retrieve endpoints
+// (agentops-013).
+//
+// Two HTTP endpoints make up the front half of the Cerebra paid funnel:
+//
+//   - POST /api/stripe/create-checkout
+//     Starts a subscription Checkout Session for the Growth tier and
+//     returns the hosted checkout URL the browser should redirect to.
+//
+//   - GET /api/stripe/session?session_id=cs_...
+//     Retrieves a completed (or open) session and returns the customer
+//     email + status. Used by /welcome to issue an API key.
+//
+// The actual Stripe SDK call is hidden behind a checkoutSessionClient
+// interface (declared here) so tests can swap a fake in without touching
+// env vars or hitting the network. Production wiring lazy-loads
+// STRIPE_SECRET_KEY at first use via newEnvStripeCheckoutClient().
+package web
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+
+	stripe "github.com/stripe/stripe-go/v76"
+	"github.com/stripe/stripe-go/v76/checkout/session"
+)
+
+// checkoutSessionClient is the seam between the HTTP layer and stripe-go.
+// Only the methods Cerebra actually needs are exposed; the SDK's full
+// CheckoutSession surface stays hidden so tests can stub it cheaply.
+type checkoutSessionClient interface {
+	CreateSubscriptionSession(ctx context.Context, opts createCheckoutOptions) (sessionID, checkoutURL string, err error)
+	GetSession(ctx context.Context, id string) (customerEmail string, status string, err error)
+}
+
+// createCheckoutOptions is the set of inputs the HTTP layer passes to the
+// checkoutSessionClient. Kept as a plain struct so swapping the SDK out
+// later (e.g. for a managed Stripe-on-Cloud-Run variant) does not ripple
+// through every caller.
+type createCheckoutOptions struct {
+	PriceID           string // Stripe price ID (STRIPE_GROWTH_PRICE_ID)
+	SuccessURL        string
+	CancelURL         string
+	ClientReferenceID string // the Cerebra API key the customer is paying for
+	CustomerEmail     string // optional pre-fill
+}
+
+const (
+	// defaultCheckoutSuccessURL is the page customers land on after a
+	// successful payment. {CHECKOUT_SESSION_ID} is a Stripe template
+	// variable expanded by Stripe before redirect. Overridable via the
+	// STRIPE_CHECKOUT_SUCCESS_URL env var so dev / staging deploys can
+	// point at locally-served pages, and so the URL can be retargeted
+	// without a code change if the marketing site routes get renamed.
+	defaultCheckoutSuccessURL = "https://cerebra.stackramp.io/welcome?session_id={CHECKOUT_SESSION_ID}"
+	// defaultCheckoutCancelURL is where Stripe sends customers who hit
+	// "Back" on the Stripe-hosted page. Overridable via
+	// STRIPE_CHECKOUT_CANCEL_URL.
+	defaultCheckoutCancelURL = "https://cerebra.stackramp.io/pricing"
+
+	// checkoutBodyMaxBytes caps the JSON body the create-checkout
+	// endpoint will read. The request only carries a short api key and
+	// an email; 8 KiB is far above the legitimate ceiling and protects
+	// the process from huge-string allocations on a public path.
+	checkoutBodyMaxBytes = 8 << 10
+)
+
+// createCheckoutRequest is the optional JSON body accepted by
+// POST /api/stripe/create-checkout. All fields are optional — the handler
+// still creates a session if the body is empty (Stripe will prompt the
+// customer for an email in that case).
+type createCheckoutRequest struct {
+	ClientReferenceID string `json:"client_reference_id"`
+	CustomerEmail     string `json:"customer_email"`
+}
+
+// createCheckoutResponse is the wire-format response from the create
+// endpoint. session_id is included so the caller can correlate the
+// returned URL with the subsequent welcome-page lookup if needed.
+type createCheckoutResponse struct {
+	CheckoutURL string `json:"checkout_url"`
+	SessionID   string `json:"session_id"`
+}
+
+// getSessionResponse is the wire-format response from the retrieve
+// endpoint.
+type getSessionResponse struct {
+	CustomerEmail string `json:"customer_email"`
+	Status        string `json:"status"`
+}
+
+// handleCreateCheckout is POST /api/stripe/create-checkout.
+//
+// It reads STRIPE_GROWTH_PRICE_ID from the environment, builds a
+// subscription-mode Checkout Session via the configured
+// checkoutSessionClient, and returns the hosted URL. Errors are
+// translated into 4xx for client mistakes (missing price id is a 500
+// because that's an operator misconfiguration, not a caller bug) and
+// 500 for upstream Stripe failures.
+func (s *Server) handleCreateCheckout(w http.ResponseWriter, r *http.Request) {
+	priceID := strings.TrimSpace(os.Getenv("STRIPE_GROWTH_PRICE_ID"))
+	if priceID == "" {
+		log.Printf("stripe: STRIPE_GROWTH_PRICE_ID is not set")
+		http.Error(w, "growth price id not configured", http.StatusInternalServerError)
+		return
+	}
+
+	// Body is optional. An unreadable / malformed body is the caller's
+	// fault (400); a truly empty body is fine (handled below). The
+	// MaxBytesReader cap protects this public endpoint from huge-string
+	// payloads that would otherwise force unbounded reads.
+	var req createCheckoutRequest
+	if r.Body != nil {
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, checkoutBodyMaxBytes))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil && !isEmptyBodyEOF(err) {
+			log.Printf("stripe: create-checkout decode body: %v", err)
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+	}
+
+	clientRef := strings.TrimSpace(req.ClientReferenceID)
+	if clientRef == "" {
+		// licenseStripeHandler.OnCheckoutComplete errors out on
+		// subscriptions without a client_reference_id, so a session
+		// created without one would mint a paying customer who never
+		// gets LicenseStore.Grant. Refuse loudly here instead of after
+		// the customer has already paid.
+		log.Printf("stripe: create-checkout missing client_reference_id")
+		http.Error(w, "client_reference_id is required", http.StatusBadRequest)
+		return
+	}
+
+	client := s.checkoutClientOrDefault()
+	if client == nil {
+		log.Printf("stripe: checkout client is nil (STRIPE_SECRET_KEY missing?)")
+		http.Error(w, "stripe checkout client not configured", http.StatusInternalServerError)
+		return
+	}
+
+	sessID, url, err := client.CreateSubscriptionSession(r.Context(), createCheckoutOptions{
+		PriceID:           priceID,
+		SuccessURL:        envOr("STRIPE_CHECKOUT_SUCCESS_URL", defaultCheckoutSuccessURL),
+		CancelURL:         envOr("STRIPE_CHECKOUT_CANCEL_URL", defaultCheckoutCancelURL),
+		ClientReferenceID: clientRef,
+		CustomerEmail:     strings.TrimSpace(req.CustomerEmail),
+	})
+	if err != nil {
+		log.Printf("stripe: create checkout session: %v", err)
+		http.Error(w, "could not create checkout session", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(createCheckoutResponse{
+		CheckoutURL: url,
+		SessionID:   sessID,
+	})
+}
+
+// handleGetCheckoutSession is GET /api/stripe/session?session_id=cs_...
+//
+// Returns the customer email and session status. The welcome page calls
+// this after Stripe redirects with the session_id query parameter; the
+// caller uses the email to mint or look up the customer's API key.
+func (s *Server) handleGetCheckoutSession(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if id == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+
+	client := s.checkoutClientOrDefault()
+	if client == nil {
+		log.Printf("stripe: checkout client is nil (STRIPE_SECRET_KEY missing?)")
+		http.Error(w, "stripe checkout client not configured", http.StatusInternalServerError)
+		return
+	}
+
+	email, status, err := client.GetSession(r.Context(), id)
+	if err != nil {
+		log.Printf("stripe: get checkout session %s: %v", id, err)
+		http.Error(w, "could not retrieve checkout session", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(getSessionResponse{
+		CustomerEmail: email,
+		Status:        status,
+	})
+}
+
+// checkoutClientOrDefault returns the explicitly-wired checkoutClient if
+// one was set via WithCheckoutClient, otherwise it lazily constructs the
+// env-backed stripeCheckoutClient. This mirrors the late-binding pattern
+// used by the LicenseStore wiring so tests can inject fakes without
+// changing the production zero-value behaviour.
+func (s *Server) checkoutClientOrDefault() checkoutSessionClient {
+	if s.checkoutClient != nil {
+		return s.checkoutClient
+	}
+	key := strings.TrimSpace(os.Getenv("STRIPE_SECRET_KEY"))
+	if key == "" {
+		return nil
+	}
+	return newEnvStripeCheckoutClient(key)
+}
+
+// WithCheckoutClient is a test seam — passing a fake here disables the
+// env-driven production client for the lifetime of the Server. Production
+// callers should leave this unset and rely on STRIPE_SECRET_KEY.
+func (s *Server) WithCheckoutClient(c checkoutSessionClient) *Server {
+	s.checkoutClient = c
+	return s
+}
+
+// stripeCheckoutClient is the production checkoutSessionClient. It calls
+// the stripe-go SDK directly, configuring the per-call Key so credential
+// rotation does not require a server restart.
+type stripeCheckoutClient struct {
+	apiKey string
+}
+
+func newEnvStripeCheckoutClient(apiKey string) *stripeCheckoutClient {
+	return &stripeCheckoutClient{apiKey: apiKey}
+}
+
+func (c *stripeCheckoutClient) CreateSubscriptionSession(ctx context.Context, opts createCheckoutOptions) (string, string, error) {
+	if opts.PriceID == "" {
+		return "", "", fmt.Errorf("price id is required")
+	}
+	params := &stripe.CheckoutSessionParams{
+		Mode:       stripe.String(string(stripe.CheckoutSessionModeSubscription)),
+		SuccessURL: stripe.String(opts.SuccessURL),
+		CancelURL:  stripe.String(opts.CancelURL),
+		LineItems: []*stripe.CheckoutSessionLineItemParams{
+			{
+				Price:    stripe.String(opts.PriceID),
+				Quantity: stripe.Int64(1),
+			},
+		},
+	}
+	// Forward the HTTP request context to stripe-go so client cancels
+	// and deadlines propagate to the outbound Stripe call instead of
+	// waiting for the SDK's default timeout.
+	params.Context = ctx
+	if opts.ClientReferenceID != "" {
+		params.ClientReferenceID = stripe.String(opts.ClientReferenceID)
+	}
+	if opts.CustomerEmail != "" {
+		params.CustomerEmail = stripe.String(opts.CustomerEmail)
+	}
+	client := session.Client{B: stripe.GetBackend(stripe.APIBackend), Key: c.apiKey}
+	sess, err := client.New(params)
+	if err != nil {
+		return "", "", fmt.Errorf("stripe new session: %w", err)
+	}
+	return sess.ID, sess.URL, nil
+}
+
+func (c *stripeCheckoutClient) GetSession(ctx context.Context, id string) (string, string, error) {
+	// Use an empty params struct purely so we can pin the request
+	// context. Without this, a client disconnect leaves the Stripe
+	// lookup running until stripe-go's default timeout fires.
+	params := &stripe.CheckoutSessionParams{}
+	params.Context = ctx
+	client := session.Client{B: stripe.GetBackend(stripe.APIBackend), Key: c.apiKey}
+	sess, err := client.Get(id, params)
+	if err != nil {
+		return "", "", fmt.Errorf("stripe get session %s: %w", id, err)
+	}
+	email := ""
+	if sess.CustomerDetails != nil {
+		email = sess.CustomerDetails.Email
+	}
+	if email == "" {
+		email = sess.CustomerEmail
+	}
+	return email, string(sess.Status), nil
+}
+
+// envOr returns the trimmed value of the named env var, or fallback if
+// the env var is unset or whitespace-only.
+func envOr(name, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// isEmptyBodyEOF returns true when a json.Decoder error is an unwrapped
+// io.EOF — the case when the caller sent no body at all. Crucially,
+// io.ErrUnexpectedEOF (which is what truncated JSON like "{" produces)
+// is rejected so malformed payloads still surface as 400s rather than
+// being silently treated as the zero-value request.
+func isEmptyBodyEOF(err error) bool {
+	return errors.Is(err, io.EOF)
+}

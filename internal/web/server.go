@@ -19,14 +19,15 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type Server struct {
-	store         store.Store
-	licenseStore  store.LicenseStore
-	embedder      embedder.Embedder
-	pipeline      *rag.Pipeline
-	cfg           *config.Config
-	tmpls         map[string]*template.Template
-	mux           *http.ServeMux
-	stripeHandler StripeEventHandler
+	store          store.Store
+	licenseStore   store.LicenseStore
+	embedder       embedder.Embedder
+	pipeline       *rag.Pipeline
+	cfg            *config.Config
+	tmpls          map[string]*template.Template
+	mux            *http.ServeMux
+	stripeHandler  StripeEventHandler
+	checkoutClient checkoutSessionClient
 }
 
 // WithLicenseStore turns on paid-tier gating by wiring a LicenseStore into
@@ -100,6 +101,8 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 		return srv.licenseStore
 	})(chatStream))
 	srv.mux.HandleFunc("POST /api/stripe/webhook", srv.handleStripeWebhook)
+	srv.mux.HandleFunc("POST /api/stripe/create-checkout", srv.handleCreateCheckout)
+	srv.mux.HandleFunc("GET /api/stripe/session", srv.handleGetCheckoutSession)
 	srv.mux.Handle("GET /static/", http.FileServerFS(staticFS))
 
 	return srv
