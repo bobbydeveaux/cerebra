@@ -48,3 +48,41 @@ Symptom check: run `sqlite3 .cerebra/jor-el.db "SELECT name FROM sqlite_master W
 ```bash
 tail -f /tmp/cerebra-brains-watch.log
 ```
+
+## Confluence indexing (optional datasource)
+
+Cerebra ships a Confluence Cloud v1 REST connector at `internal/datasource/confluence/` (see `docs/LLD.md` §14.2). It pulls pages from configured spaces and feeds them through the same chunker → embedder → store pipeline as filesystem content.
+
+### Configuration
+
+```yaml
+# cerebra.yaml
+confluence:
+  base_url: https://<your-org>.atlassian.net/wiki
+  email: <atlassian-user-email>
+  api_token: ""              # leave blank, set via env var
+  space_keys:                # optional; empty = index all spaces the token can read
+    - RES
+```
+
+### Environment variables
+
+The API token is resolved in this order (first non-empty wins):
+
+| Order | Variable | Notes |
+|---|---|---|
+| 1 | `confluence.api_token` in `cerebra.yaml` | Don't commit real tokens to the file |
+| 2 | `TT_RES_CONFLUENCE` | Toucanberry-specific legacy name; kept for backwards compatibility |
+| 3 | `CONFLUENCE_API_TOKEN` | Canonical name; prefer this for new setups |
+
+Generate a token at <https://id.atlassian.com/manage-profile/security/api-tokens>. It needs read access to every space listed under `space_keys`.
+
+### One-shot scan
+
+```bash
+export CONFLUENCE_API_TOKEN=your-token-here
+make build
+./cerebra scan      # picks up the confluence: block from cerebra.yaml
+```
+
+If the connector returns HTTP 401, the token is missing or wrong; HTTP 403 means the token user does not have read access to one of the configured spaces.
