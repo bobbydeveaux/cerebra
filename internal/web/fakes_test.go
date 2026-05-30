@@ -174,3 +174,33 @@ func (e *fakeEmbedder) Dimensions() int {
 	}
 	return e.dim
 }
+
+// fakeChatPipeline implements the chatPipeline interface used by
+// handleChatStream. It returns a pre-canned error (when answerErr is set)
+// or streams pre-canned tokens (from tokens) through a buffered channel.
+// The recorded question and history let tests assert that the handler
+// forwards the URL query params unchanged.
+type fakeChatPipeline struct {
+	tokens    []string
+	answerErr error
+
+	// Captured by AnswerWithHistory for assertion.
+	gotQuestion string
+	gotHistory  []map[string]string
+}
+
+func (f *fakeChatPipeline) AnswerWithHistory(_ context.Context, question string, history []map[string]string) (<-chan string, error) {
+	f.gotQuestion = question
+	f.gotHistory = history
+
+	if f.answerErr != nil {
+		return nil, f.answerErr
+	}
+
+	ch := make(chan string, len(f.tokens))
+	for _, tok := range f.tokens {
+		ch <- tok
+	}
+	close(ch)
+	return ch, nil
+}
