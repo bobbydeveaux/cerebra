@@ -1,8 +1,10 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -146,3 +148,73 @@ var (
 	_ embedder.Embedder = panickingEmbedder{}
 	_ store.Store       = (*fakeStore)(nil) // confirms our fake remains current
 )
+
+// TestHealthEndpointBodyContainsStatusOkLiteral asserts the raw response
+// bytes contain the literal substring `"status":"ok"`. The decode-based
+// tests above check the struct shape after json.Unmarshal, which means a
+// future rename of the `Status` JSON field (e.g. to `state`) would still
+// satisfy those tests if the struct tag was updated in lock-step. Cloud
+// Run liveness probes can be configured to do a substring match on the
+// response body, so the byte-level contract is the one that matters in
+// production. This test locks that contract in.
+func TestHealthEndpointBodyContainsStatusOkLiteral(t *testing.T) {
+	srv := newHealthTestServer()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	want := []byte(`"status":"ok"`)
+	if !bytes.Contains(body, want) {
+		t.Errorf("body = %q, want substring %q", string(body), string(want))
+	}
+}
+
+// TestHealthEndpointRejectsNonGETMethods exercises the Go 1.22 ServeMux
+// method-routed pattern (`GET /health` in server.go) and asserts that
+// non-GET verbs are rejected with 405 Method Not Allowed. If the route
+// were ever re-registered as a path-only pattern (`/health`), all four
+// subtests would fail — that is the regression this test catches. Cloud
+// Run uses GET for liveness probes, but external monitors sometimes
+// default to HEAD or POST and the 405 surface is the documented signal
+// that they should switch to GET.
+func TestHealthEndpointRejectsNonGETMethods(t *testing.T) {
+	srv := newHealthTestServer()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	methods := []string{
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodPatch,
+	}
+
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			req, err := http.NewRequest(method, ts.URL+"/health", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Errorf("%s /health status = %d, want %d",
+					method, resp.StatusCode, http.StatusMethodNotAllowed)
+			}
+		})
+	}
+}
