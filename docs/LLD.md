@@ -724,6 +724,13 @@ embed_batch_size: 32
 - `internal/embedder/pool_test.go` — test worker pool with a mock embedder
 - `internal/store/store_test.go` — test DB operations against an in-memory SQLite DB
 - `internal/scanner/incremental_test.go` — test change detection logic with mock git output
+- `internal/datasource/confluence/confluence_test.go` — test Confluence v1 API parsing and `htmlToText` against fixture responses
+- `internal/storage/*_test.go` — test GCS, S3, and local storage adapters against the `Storage` interface
+- `internal/mcp/*_test.go` — test MCP request handling, tool dispatch, JSON-RPC framing
+- `internal/web/server_test.go` — test HTTP handlers, route registration, htmx fragments, SSE stream
+- `internal/config/config_test.go` — test config loading from YAML + env vars
+- `internal/brain/*_test.go` — test conversation watcher and brain registry against fixture JSONL
+- `internal/rag/*_test.go` — test RAG pipeline with mock embedder + mock LLM client
 
 ### Integration Tests
 - `integration/scan_test.go` — run a full scan against a small fixture repository in `testdata/`
@@ -734,13 +741,191 @@ embed_batch_size: 32
 - `testdata/repo/` — a small fake repository with multiple file types
 - `testdata/git/` — pre-seeded git log for testing git history extraction
 
+### Coverage Bar
+
+The 2026-05-29 to 2026-05-30 coverage sprint (PRs #4–#16) established a 60%+ unit-test coverage floor across every shipping `internal/` package. The current bar (measured `go test -tags sqlite_fts5 -cover ./internal/...`) is:
+
+| Package | Coverage | Notes |
+|---|---|---|
+| `internal/brain` | 78.1% | Conversation watcher + brain registry (PR #6) |
+| `internal/chunker` | 96.7% | Code, markdown, config, git history chunkers |
+| `internal/config` | 95.2% | YAML + env-var loading (PR #15) |
+| `internal/datasource/confluence` | 95.3% | Confluence v1 REST connector (PR #11) |
+| `internal/docs` | 0.0% | Doc generator — not on the bar yet (deferred to post-launch) |
+| `internal/embedder` | 95.5% | Ollama + OpenAI + worker pool (PR #9) |
+| `internal/mcp` | 99.2% | MCP stdio server + tool handlers (PR #12) |
+| `internal/rag` | 90.6% | RAG pipeline with mock LLM client |
+| `internal/scanner` | 91.0% | Filesystem walker, git metadata, incremental sync (PR #7) |
+| `internal/storage` | 90.0% | GCS + S3 + local backends (PR #13) |
+| `internal/store` | 86.4% | SQLite store, FTS5 + vec queries (PR #8) |
+| `internal/web` | 83.9% | HTTP handlers, htmx, SSE chat stream (PR #5) |
+
+`internal/docs` is the only known gap and is intentionally excluded from the 60%+ floor until after the public launch.
+
 ### Running Tests
+
 Cerebra requires the `sqlite_fts5` build tag (FTS5 in `mattn/go-sqlite3` is gated behind it).
 Always prefer `make test` / `make vet`; the Makefile sets the tag for you.
 
 ```bash
 make test                                                       # all unit tests with sqlite_fts5
 make vet                                                        # go vet with sqlite_fts5
+go test -tags sqlite_fts5 -cover ./internal/...                 # unit tests with per-package coverage
 go test -tags sqlite_fts5 ./integration/...                     # integration tests (requires Ollama running)
 go test -tags sqlite_fts5 -run TestChunker ./internal/chunker/  # single test
 ```
+
+To regress-check the coverage bar locally, compare the `coverage:` column from `go test -cover` against the table above and ensure no package drops below the figure recorded here unless the change is intentional and reflected back into this LLD.
+
+---
+
+## 14. Datasources
+
+Cerebra ingests two classes of source material: local filesystem content (the inherited Fortress scanner) and remote SaaS content (currently Confluence Cloud). Both feed the same downstream pipeline — `Chunker → Embedder → Store` — by emitting `scanner.Document` values.
+
+### 14.1 Filesystem Scanner (inherited)
+
+See §1 (`internal/scanner/`) and §6 (Incremental Sync Algorithm). The scanner walks a root path, classifies files by language/type, extracts git metadata where available, and emits one `Document` per file plus per-window git-history pseudo-documents.
+
+### 14.2 Confluence Cloud Connector (`internal/datasource/confluence/`)
+
+Cerebra ships a Confluence Cloud v1 REST API connector. It is implemented as a `Provider` struct that, like the filesystem `Scanner`, returns a `<-chan scanner.Document` plus a `<-chan error` so the rest of the pipeline (chunker → embedder → store) does not need to know whether a document came from disk or from Confluence.
+
+```go
+// internal/datasource/confluence/confluence.go
+type Provider struct {
+    baseURL  string   // e.g. https://mycompany.atlassian.net/wiki
+    email    string
+    apiToken string
+    spaces   []string // space keys to index, empty = all spaces
+    client   *http.Client
+}
+
+func New(baseURL, email, apiToken string, spaces []string) *Provider
+
+// Scan paginates /rest/api/space then /rest/api/content per space,
+// emits one Document per page with status == "current".
+func (p *Provider) Scan(ctx context.Context) (<-chan scanner.Document, <-chan error)
+```
+
+#### API endpoints used
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /rest/api/space?limit=50` | List spaces (paginated via `_links.next`); filtered against the configured `space_keys` |
+| `GET /rest/api/content?spaceKey={K}&type=page&limit=50&expand=body.storage,version,space` | List pages for a space (paginated via `_links.next`); only `status == "current"` pages are emitted |
+
+Authentication is HTTP basic with `email:api_token` per Atlassian Cloud's API token scheme.
+
+#### Inputs (config + env vars)
+
+```yaml
+# cerebra.yaml
+confluence:
+  base_url: https://toucanberry.atlassian.net/wiki
+  email: bobby.deveaux@toucanberry.com
+  api_token: ""            # prefer env var
+  space_keys:              # optional; empty = index all spaces
+    - RES
+```
+
+Token resolution order in `internal/config/config.go`:
+1. `confluence.api_token` field in `cerebra.yaml`
+2. `TT_RES_CONFLUENCE` env var (Toucanberry-specific legacy name; first match wins for backwards compatibility)
+3. `CONFLUENCE_API_TOKEN` env var (canonical name; fallback)
+
+The first non-empty value wins. Empty config + empty env vars leave `apiToken` blank and the connector will return HTTP 401 from its first call.
+
+#### Output (Document shape)
+
+Each Confluence page becomes one `scanner.Document`:
+
+```go
+scanner.Document{
+    ID:          sha256("confluence:" + spaceKey + ":" + pageID),
+    Path:        "<baseURL>" + page._links.webui,    // public web URL
+    RelPath:     "confluence/" + spaceKey + "/" + sanitised(title) + ".wiki",
+    Repo:        "confluence/" + spaceKey,
+    RepoRoot:    "",                                  // not on local disk
+    Category:    scanner.CategoryDocs,
+    Language:    "confluence",
+    FileType:    scanner.FileTypeWiki,
+    SourceType:  scanner.SourceTypeConfluence,
+    Content:     "# " + title + "\n\n" + htmlToText(storage),
+    ContentHash: sha256(Content),
+    ModTime:     page.version.when (RFC3339) or time.Now(),
+    Metadata:    {source, space_key, space_name, page_id, page_title, version, web_url, author},
+}
+```
+
+`htmlToText` converts Confluence storage-format XHTML to a markdownish plain-text body: `<h1>`–`<h6>` become `#`–`######` headings, `<li>` becomes `- `, `<a>` becomes `text (href)`, code-macro bodies become fenced code blocks, structured macros are stripped while keeping their inner text, and the common HTML entities are unescaped. The result flows into the existing `chunker/markdown.go` heading-based splitter (see §4.2) — no Confluence-specific chunker is needed.
+
+#### Incremental rescans
+
+Confluence pages do not yet participate in the incremental-sync flow described in §6 — every `Scan(ctx)` call pulls every current page in the configured spaces and the store de-duplicates by `Document.ID`. Per-page change detection via `version.number` is a planned follow-up.
+
+#### Failure modes
+
+- Network or auth failure listing spaces → fatal: error sent on `errs` channel, the goroutine returns and `docs` is closed without any document being emitted.
+- Per-space failure listing pages → non-fatal: error sent on `errs` (best-effort, non-blocking), connector moves on to the next space.
+- Per-page parse failure → not currently possible; the entire page list is JSON-decoded in one shot per page, and any decode error fails the whole `scanSpace` call.
+
+---
+
+## 15. Storage Backends
+
+The `internal/storage/` package abstracts where the SQLite DB file (`jor-el.db`) is uploaded to / downloaded from. It exists so a Cloud Run instance can hydrate from a remote object store on boot and persist back on shutdown without baking cloud SDKs into the rest of the codebase.
+
+```go
+// internal/storage/storage.go
+type Storage interface {
+    Upload(ctx context.Context, localPath string) error
+    Download(ctx context.Context, localPath string) error
+}
+
+func New(uri string) (Storage, error)
+```
+
+`New` dispatches on the URI scheme:
+
+| URI form | Backend | File |
+|---|---|---|
+| `""` or any string without `://` | `LocalStorage` (noop) | `internal/storage/local.go` |
+| `gcs://bucket/path/to/key` | `GCSStorage` (Google Cloud Storage) | `internal/storage/gcs.go` |
+| `s3://bucket/path/to/key` | `S3Storage` (AWS S3) | `internal/storage/s3.go` |
+
+Anything else returns `"unsupported storage URI scheme"`. Malformed `gcs://` or `s3://` URIs (missing bucket or key portion) return an explicit format error.
+
+### 15.1 LocalStorage
+
+A no-op adapter — `Upload` and `Download` both succeed without touching the disk because the DB file is already at the local path. Used in dev and in tests.
+
+### 15.2 GCSStorage
+
+Wraps `cloud.google.com/go/storage`. Authentication is via Application Default Credentials (ADC) — on Cloud Run this is the runtime service account; locally it is `gcloud auth application-default login`.
+
+- `Upload`: opens the local file, writes it to `bucket/key`, closes the writer.
+- `Download`: opens the GCS object as a reader, copies into the local file, closes both.
+
+### 15.3 S3Storage
+
+Wraps `github.com/aws/aws-sdk-go-v2/service/s3`. Authentication follows the AWS SDK default chain (env vars, shared credentials, IAM role).
+
+- `Upload`: `PutObject` with the local file as `Body`.
+- `Download`: `GetObject` then copy to the local file.
+
+### 15.4 Coverage and testing
+
+PR #13 (commit `ce08370`) added unit tests for all three adapters and the URI dispatcher in `New`. As of the coverage bar in §13.Coverage Bar the package sits at 90.0% — GCS and S3 are exercised against fake HTTP servers; the dispatcher's malformed-URI and unsupported-scheme branches are covered. The remaining 10% is the actual SDK round-trip code path that cannot be exercised without real cloud credentials.
+
+### 15.5 Configuration
+
+The backend URI lives in `cerebra.yaml`:
+
+```yaml
+# Cloud storage URI (optional)
+# Formats: gcs://bucket/path  or  s3://bucket/path
+cloud_storage: ""
+```
+
+When set, the boot sequence calls `storage.New(uri)`, `Download(dbPath)`, then runs as normal; on shutdown (or after a `scan`) it calls `Upload(dbPath)`.
