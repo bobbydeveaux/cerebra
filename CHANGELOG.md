@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Test workflow with `sqlite_fts5` build tag** — GitHub Actions runs `go test ./...` with the build tag required for the FTS5 search path (#4)
+- **`internal/web` test suite** — handler coverage raised from 7.7% to 83.9%, exercising wiki, search, and chat handlers (#5)
+- **`internal/brain` test suite** — registry, session loading, and summary paths covered, 0% to 78.1% (#6)
+- **`internal/scanner` test suite** — language detection, categorisation, and walk logic covered, 25% to 91% (#7)
+- **`internal/store` test suite** — query helpers and write paths covered, 42% to 84.5% (#8)
+- **`internal/embedder` test suite** — Ollama and OpenAI providers covered, 32.8% to 95.5% (#9)
+- **`internal/rag` test suite** — pipeline assembly, prompt building, and streaming covered, 0% to 90.6% (#10)
+- **`internal/datasource/confluence` test suite** — connector, pagination, and chunk emission covered, 0% to 95.3% (#11)
+- **`internal/mcp` test suite** — tool dispatch and response shaping covered, 0% to 99.2% (#12)
+- **`internal/storage` test suite** — GCS and S3 sync paths covered, 0% to 90% (#13)
+- **`internal/chunker` test suite** — function, heading, and whole-file chunkers covered, 65.6% to 96.7% (#14)
+- **`internal/config` test suite** — YAML loading, env-var override, and validation covered, 0% to 95.2% (#15)
+- **`internal/store` agent_messages test suite** — read and write paths fully covered, 89.4% to 100% (#16)
+- **`docs/LLD.md` Confluence + storage + coverage sections** — documents the Confluence datasource connector, GCS/S3 storage backends, and the 60% coverage bar (#17)
+- **Structured HTTP request logging middleware** — `internal/web/logging.go` injects request ID, method, path, status, latency, and bytes written into every HTTP response (#18)
+
+### Changed
+- Internal package test coverage floor raised from 7.7% to 95%+ across all 12 internal packages plus the `agent_messages` subset of `internal/store` (#4-#16)
+
+### Fixed
+- **CI silently used a degraded FTS5 code path** — the `sqlite_fts5` build tag was not wired into the CI test step, so the FTS5-backed search code was untested in the pipeline (#4)
+
 ## [0.2.0] - 2026-04-18
 
 ### Added
