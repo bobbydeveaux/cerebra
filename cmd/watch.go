@@ -38,7 +38,13 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	ctx := context.Background()
+	// Honour the cobra command context so callers (and tests) can cancel a
+	// long-running watch cleanly. Falls back to a never-cancelled context
+	// when invoked outside of a cobra ExecuteContext.
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	var emb embedder.Embedder
 	switch cfg.Embedder {
@@ -78,6 +84,8 @@ func runWatch(cmd *cobra.Command, args []string) error {
 
 	for {
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
