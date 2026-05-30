@@ -65,6 +65,7 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 		srv.tmpls[page] = t
 	}
 
+	srv.mux.HandleFunc("GET /health", srv.handleHealth)
 	srv.mux.HandleFunc("GET /", srv.handleIndex)
 	srv.mux.HandleFunc("GET /categories/{name}", srv.handleCategory)
 	srv.mux.HandleFunc("GET /files/{path...}", srv.handleFile)

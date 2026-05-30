@@ -8,6 +8,8 @@ frontend:
 
 database: false
 
+healthcheck_path: /health
+
 quality:
   max_ccn: 50
   max_cognitive: 70
