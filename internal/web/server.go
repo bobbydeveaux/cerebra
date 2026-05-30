@@ -3,8 +3,10 @@ package web
 import (
 	"embed"
 	"html/template"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 
 	"github.com/bobbydeveaux/cerebra/internal/config"
 	"github.com/bobbydeveaux/cerebra/internal/embedder"
@@ -26,6 +28,7 @@ type Server struct {
 	tmpls         map[string]*template.Template
 	mux           *http.ServeMux
 	stripeHandler StripeEventHandler
+	logger        *slog.Logger
 }
 
 func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *config.Config) *Server {
@@ -37,6 +40,7 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 		mux:           http.NewServeMux(),
 		tmpls:         make(map[string]*template.Template),
 		stripeHandler: loggingStripeHandler{},
+		logger:        slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 	}
 
 	funcMap := template.FuncMap{
@@ -76,6 +80,23 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 	return srv
 }
 
+// WithLogger replaces the Server's slog logger and returns the Server
+// for chaining. A nil logger disables the request-logging middleware (the
+// mux is exposed unwrapped). Tests use this to inject a buffer-backed
+// logger so they can assert the emitted JSON line.
+func (s *Server) WithLogger(logger *slog.Logger) *Server {
+	s.logger = logger
+	return s
+}
+
+// Handler returns the http.Handler that should be exposed to a listener.
+// The mux is wrapped in loggingMiddleware so every request gets a
+// structured JSON log line. Tests should also drive httptest.NewServer
+// with Handler() (not s.mux) so the middleware is exercised.
+func (s *Server) Handler() http.Handler {
+	return loggingMiddleware(s.mux, s.logger)
+}
+
 func (s *Server) Serve(ln net.Listener) error {
-	return http.Serve(ln, s.mux)
+	return http.Serve(ln, s.Handler())
 }
