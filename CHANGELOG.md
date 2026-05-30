@@ -18,9 +18,13 @@
 - **`internal/store` agent_messages test suite** — read and write paths fully covered, 89.4% to 100% (#16)
 - **`docs/LLD.md` Confluence + storage + coverage sections** — documents the Confluence datasource connector, GCS/S3 storage backends, and the 60% coverage bar (#17)
 - **Structured HTTP request logging middleware** — `internal/web/logging.go` injects request ID, method, path, status, latency, and bytes written into every HTTP response (#18)
+- **CHANGELOG `[Unreleased]` section populated** — sprint PRs #4 to #18 documented in the established format (#19)
+- **`/health` endpoint** — `GET /health` returns `200 {"status":"ok","version":"dev"}` for Cloud Run liveness and readiness probes (#20)
+- **`internal/docs` test suite** — generator, index, and per-category render paths covered, 0% to 96.6% (#21)
 
 ### Changed
 - Internal package test coverage floor raised from 7.7% to 95%+ across all 12 internal packages plus the `agent_messages` subset of `internal/store` (#4-#16)
+- **`internal/brain/parser.go` cognitive complexity** — `ParseSessionFile` split into focused helpers, complexity reduced from ~101 to under 70 to clear the StackRamp quality gate (#22)
 
 ### Fixed
 - **CI silently used a degraded FTS5 code path** — the `sqlite_fts5` build tag was not wired into the CI test step, so the FTS5-backed search code was untested in the pipeline (#4)
