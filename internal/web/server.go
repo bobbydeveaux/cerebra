@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"html/template"
 	"log/slog"
@@ -14,6 +15,15 @@ import (
 	"github.com/bobbydeveaux/cerebra/internal/store"
 )
 
+// chatPipeline is the minimal pipeline surface used by handleChatStream.
+// Declaring it as an interface here (rather than holding a concrete
+// *rag.Pipeline) lets tests inject a fake that streams pre-canned tokens
+// without making a real HTTP call to Ollama / OpenAI / Claude / MiniMax.
+// *rag.Pipeline satisfies this implicitly via its AnswerWithHistory method.
+type chatPipeline interface {
+	AnswerWithHistory(ctx context.Context, question string, history []map[string]string) (<-chan string, error)
+}
+
 //go:embed templates/*.html
 var templateFS embed.FS
 
@@ -23,7 +33,7 @@ var staticFS embed.FS
 type Server struct {
 	store         store.Store
 	embedder      embedder.Embedder
-	pipeline      *rag.Pipeline
+	pipeline      chatPipeline
 	cfg           *config.Config
 	tmpls         map[string]*template.Template
 	mux           *http.ServeMux
