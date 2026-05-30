@@ -73,7 +73,11 @@ func runBrainsWatch(cmd *cobra.Command, args []string) error {
 
 	indexer := brain.NewIndexer(db, emb, cfg.EmbedWorkers, cfg.EmbedBatchSize, cfg.ChunkSize)
 	w := brain.NewWatcher(db, indexer, watchPath)
-	ctx := context.Background()
+	// Honour the cobra command context so callers can cancel cleanly.
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return w.Start(ctx)
 }
 
