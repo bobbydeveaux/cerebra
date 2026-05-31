@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- **Stripe webhook handler** (agentops-011, ad78fe8) — `POST /api/stripe/webhook` reads the raw request body (1 MiB cap), verifies the `Stripe-Signature` header via `stripe-go`'s `webhook.ConstructEventWithOptions`, and dispatches `checkout.session.completed` and `customer.subscription.deleted` to a `StripeEventHandler` interface. Missing `STRIPE_WEBHOOK_SECRET` fails loud with 500; signature failures return 400; unknown event types are accepted with 200 so Stripe stops retrying. Dependency: `github.com/stripe/stripe-go/v76 v76.25.0`.
+- **Agent-level indexing** (agentops-010, 65ba86e) — new `agent_messages` table (PK = `tool_use_id`) plus FTS5 mirror parses Agent tool-use blocks (`subagent_type`, `prompt`, `description`) from assistant messages and stitches them to the matching tool-result block via `tool_use_id`. Exposes two new MCP tools — `search_agent` and `list_agent_activity` — so queries like "what did Marcus flag this month?" no longer require semantic search across all brains.
 - **Test workflow with `sqlite_fts5` build tag** — GitHub Actions runs `go test ./...` with the build tag required for the FTS5 search path (#4)
 - **`internal/web` test suite** — handler coverage raised from 7.7% to 83.9%, exercising wiki, search, and chat handlers (#5)
 - **`internal/brain` test suite** — registry, session loading, and summary paths covered, 0% to 78.1% (#6)
