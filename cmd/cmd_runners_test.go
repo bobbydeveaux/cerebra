@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bobbydeveaux/cerebra/internal/chunker"
 	"github.com/bobbydeveaux/cerebra/internal/config"
+	"github.com/bobbydeveaux/cerebra/internal/scanner"
 	"github.com/bobbydeveaux/cerebra/internal/store"
 )
 
@@ -561,5 +565,258 @@ func TestInitConfigRespectsDBPathFlag(t *testing.T) {
 	// completes without panicking and populates a non-empty DBPath.
 	if cfg.DBPath == "" {
 		t.Error("cfg.DBPath is empty; initConfig must always populate a default")
+	}
+}
+
+// TestRunSearchRendersResultsAfterFTSSeed seeds a single chunk into the store
+// with non-empty Repo/Category metadata and >500-char content, then runs
+// runSearch against an FTS keyword. The zero-vector embedding from the stub
+// yields no vector hits, so the code path falls through to FTS, finds the
+// chunk, and renders the result. This covers the formatting branches that the
+// empty-store test in agentops-046 (PR #27) could not reach: the result loop,
+// the line-range printf, the Repo/Category line, and the 500-char truncation.
+func TestRunSearchRendersResultsAfterFTSSeed(t *testing.T) {
+	stubCfg(t)
+
+	prev := searchLimit
+	searchLimit = 5
+	t.Cleanup(func() { searchLimit = prev })
+
+	// Open the store and seed one document + chunk. The chunk content
+	// includes the FTS keyword "uniqueneedle" and is >500 chars so the
+	// truncation branch executes.
+	db, err := store.New(cfg.DBPath, 768)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	ctx := context.Background()
+
+	body := strings.Repeat("uniqueneedle alpha beta gamma delta ", 20) // ~ 740 chars
+	doc := scanner.Document{
+		ID:          "search-render-doc",
+		Path:        "/tmp/render.go",
+		RelPath:     "render.go",
+		Repo:        "cerebra-test",
+		Category:    scanner.CategoryAPI,
+		FileType:    scanner.FileTypeCode,
+		Content:     body,
+		ContentHash: "rendertesthash",
+		Metadata:    map[string]string{},
+	}
+	chunks := []chunker.Chunk{
+		{
+			ID:         "search-render-chunk",
+			DocumentID: doc.ID,
+			Content:    body,
+			StartLine:  10,
+			EndLine:    25,
+			Metadata: chunker.ChunkMeta{
+				Path:     "render.go",
+				Repo:     "cerebra-test",
+				Category: scanner.CategoryAPI,
+				Language: "go",
+				FileType: scanner.FileTypeCode,
+			},
+		},
+	}
+	if err := db.UpsertDocument(ctx, doc, chunks); err != nil {
+		t.Fatalf("seed doc: %v", err)
+	}
+	db.Close()
+
+	finish := captureStdout(t)
+	if err := runSearch(searchCmd, []string{"uniqueneedle"}); err != nil {
+		t.Fatalf("runSearch = %v, want nil", err)
+	}
+	out := finish()
+
+	for _, want := range []string{
+		"--- Result 1",        // result-loop header
+		"File: render.go:10-25", // path + line range branch
+		"Repo: cerebra-test",   // repo-metadata branch
+		"...",                  // 500-char truncation branch
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("runSearch FTS-hit output missing %q.\nGot:\n%s", want, out)
+		}
+	}
+}
+
+// TestRunServeUIBranchListensThenWeShutItDown drives runServe's `--ui` branch
+// to cover serveDB override, servePort override, web.NewServer wiring, and
+// the net.Listen + srv.Serve(ln) path. We pick a free port via a probe
+// listener, close it, then point runServe at the same port. After the server
+// goroutine has had time to bind, we dial it to confirm it is listening, then
+// the test exits. The runServe goroutine leaks deliberately — http.Serve has
+// no Shutdown hook through this entry point and the test process exits at the
+// end of `go test` regardless. Documented inline.
+func TestRunServeUIBranchListensThenWeShutItDown(t *testing.T) {
+	stubCfg(t)
+
+	// Pick a free port by binding briefly and releasing.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe listen: %v", err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	probe.Close()
+
+	// Use serveDB override so the dbPath branch executes (different from cfg.DBPath).
+	customDB := filepath.Join(t.TempDir(), "ui-override.db")
+
+	prevUI, prevPort, prevDB := serveUI, servePort, serveDB
+	serveUI = true
+	servePort = port
+	serveDB = customDB
+	t.Cleanup(func() {
+		serveUI = prevUI
+		servePort = prevPort
+		serveDB = prevDB
+	})
+
+	cfg.UIBind = "127.0.0.1"
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runServe(serveCmd, nil)
+	}()
+
+	// Poll-dial until the listener is up, give up after 2s.
+	deadline := time.Now().Add(2 * time.Second)
+	var dialed bool
+	for time.Now().Before(deadline) {
+		conn, derr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
+		if derr == nil {
+			conn.Close()
+			dialed = true
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	if !dialed {
+		// If runServe returned an error before binding, surface it for the
+		// failure path rather than just claiming "did not bind".
+		select {
+		case rerr := <-done:
+			t.Fatalf("runServe(--ui) returned before binding: %v", rerr)
+		default:
+		}
+		t.Fatal("runServe(--ui) did not bind within 2s")
+	}
+	// The goroutine is left running — http.Serve only returns on listener
+	// close, and the listener is owned inside runServe. This is acceptable
+	// for a unit test: the process exits when `go test` finishes.
+}
+
+// TestRunWatchHandlesWriteCreateAndIgnoredFile drives runWatch through one
+// fsnotify Write/Create cycle plus an ignored-file cycle. The pre-cancel
+// test (TestRunWatchExitsOnContextCancel) hits the ctx.Done() arm; this test
+// hits the event-dispatch arms. We use a deadlined context so the watch
+// loop eventually exits without leaking; the actual chunk + embed + store
+// upsert path may emit log lines (errors writing fixture-quality content),
+// but exercises the inner closures regardless.
+func TestRunWatchHandlesWriteCreateAndIgnoredFile(t *testing.T) {
+	stubCfg(t)
+
+	watchDir := t.TempDir()
+
+	// Pre-create an ignored sub-path so the Ignorer.ShouldIgnore branch fires
+	// when a write inside it lands. The default cfg.Ignore from stubCfg
+	// includes ".git" — write a file matching that pattern.
+	ignoredFile := filepath.Join(watchDir, ".git-ignored.tmp")
+
+	// Use a context with a deadline that's long enough for fsnotify to
+	// deliver the events and the 500ms debounce timers (both Create and
+	// Remove arms) to fire.
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	t.Cleanup(cancel)
+
+	watchCmd.SetContext(ctx)
+	t.Cleanup(func() { watchCmd.SetContext(nil) })
+
+	finish := captureStdout(t)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runWatch(watchCmd, []string{watchDir})
+	}()
+
+	// Give runWatch ~100ms to wire up its fsnotify watcher before we write.
+	time.Sleep(150 * time.Millisecond)
+
+	// Pre-write a "to-be-removed" file before runWatch starts watching, so
+	// the Remove event later is the first thing fsnotify sees on that path.
+	removableFile := filepath.Join(watchDir, "removeme.md")
+	if err := os.WriteFile(removableFile, []byte("# bye\n"), 0o644); err != nil {
+		t.Fatalf("writing removable fixture: %v", err)
+	}
+
+	// Write a "normal" file — triggers Create + Write events.
+	regularFile := filepath.Join(watchDir, "hello.md")
+	if err := os.WriteFile(regularFile, []byte("# hi\n\nbody text\n"), 0o644); err != nil {
+		t.Fatalf("writing regular fixture: %v", err)
+	}
+
+	// Write an ignored file — triggers Create, ShouldIgnore returns true, skip.
+	if err := os.WriteFile(ignoredFile, []byte("ignored content\n"), 0o644); err != nil {
+		t.Fatalf("writing ignored fixture: %v", err)
+	}
+
+	// Give the Create-event AfterFunc a chance to either schedule or fire
+	// before we remove — also widens the gap so the Remove event isn't
+	// swallowed inside the same debounce window as the Create.
+	time.Sleep(800 * time.Millisecond)
+
+	// Now remove the file to drive the Remove/Rename branch + its AfterFunc.
+	if err := os.Remove(removableFile); err != nil {
+		t.Fatalf("removing fixture: %v", err)
+	}
+
+	// Wait for runWatch to return via context deadline.
+	select {
+	case err := <-done:
+		// context.DeadlineExceeded (when our deadline fires) is the expected
+		// terminal state. Accept any non-nil ctx error.
+		if err != context.DeadlineExceeded && err != context.Canceled {
+			t.Errorf("runWatch returned %v, want context.DeadlineExceeded or context.Canceled", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runWatch did not exit within 3s of context deadline")
+	}
+	_ = finish()
+}
+
+// TestRunBrainsWatchFallsBackToHomeDir clears cfg.BrainWatchPath so the
+// `watchPath == ""` arm of runBrainsWatch executes, falling back to
+// filepath.Join(home, ".claude", "projects"). We point $HOME at a temp dir
+// (no .claude/projects subdir) and pre-cancel the context so brain.Watcher
+// either fails fast on a missing dir or sees ctx.Done() and exits.
+func TestRunBrainsWatchFallsBackToHomeDir(t *testing.T) {
+	stubCfg(t)
+
+	cfg.BrainWatchPath = "" // force the fallback branch
+
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	brainsWatchCmd.SetContext(ctx)
+	t.Cleanup(func() { brainsWatchCmd.SetContext(nil) })
+
+	finish := captureStdout(t)
+	err := runBrainsWatch(brainsWatchCmd, nil)
+	_ = finish()
+
+	// Acceptable outcomes:
+	//   - context.Canceled (or wrapped form) — watcher honoured ctx
+	//   - any error mentioning "no such file" / "does not exist" — fallback
+	//     dir is genuinely missing, which is the branch we wanted to cover
+	// What we don't accept is nil return (would imply the function didn't
+	// even attempt the fallback path).
+	if err == nil {
+		t.Fatal("runBrainsWatch with empty BrainWatchPath + missing $HOME/.claude/projects should error, got nil")
 	}
 }
