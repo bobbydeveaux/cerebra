@@ -256,6 +256,70 @@ Commands:
 
 ---
 
+## Billing & Stripe (paid tier)
+
+Cerebra's AgentOps paid tier is delivered through Stripe. The subscription
+lifecycle is handled server-side by a Stripe webhook (`POST /api/stripe/webhook`).
+
+> **Current status:** the webhook handler is shipped and verifies events, but
+> paid-tier feature gating (a `RequirePaid` middleware backed by a licence
+> store) is **planned, not yet wired on `main`**. All features are currently
+> unrestricted regardless of subscription state. The steps below cover wiring
+> the webhook so subscription events are received and verified.
+
+### What the webhook does
+
+The handler reads the raw request body (capped at 1 MiB), verifies the
+`Stripe-Signature` header via Stripe's HMAC-SHA256 signing, and dispatches the
+two events Cerebra cares about. Every other event type is accepted with a `200`
+so Stripe stops retrying.
+
+| Event | Meaning |
+|-------|---------|
+| `checkout.session.completed` | Subscription started |
+| `customer.subscription.deleted` | Subscription ended |
+
+Verification behaviour:
+
+- Missing `STRIPE_WEBHOOK_SECRET` -> `500` (loud failure beats silently
+  accepting any payload)
+- Signature verification failure -> `400`
+- Handled event processed without error -> `200 {"ok":true}`
+
+### Environment variables
+
+| Variable | Status | Purpose | Example |
+|----------|--------|---------|---------|
+| `STRIPE_WEBHOOK_SECRET` | **Required** | Signing secret used to verify the `Stripe-Signature` header. The webhook returns `500` until this is set. | `whsec_xxxxxxxxxxxxxxxxxxxxxxxx` |
+| `STRIPE_PRICE_ID` | Planned | Price/plan identifier for the paid tier. Reserved for the planned `RequirePaid` gating; **not read by current code**. | `price_xxxxxxxxxxxxxxxx` |
+
+Set these as environment variables only. On Cloud Run the value is mounted from
+Secret Manager -- never hardcode it and never commit it.
+
+### Wiring Stripe test-mode keys
+
+1. In the [Stripe Dashboard](https://dashboard.stripe.com/test/webhooks)
+   (test mode), create a webhook endpoint pointing at the Cloud Run URL:
+
+   ```
+   https://cerebra.stackramp.io/api/stripe/webhook
+   ```
+
+2. Subscribe the endpoint to at least `checkout.session.completed` and
+   `customer.subscription.deleted`.
+3. Copy the endpoint's **Signing secret** (begins with `whsec_`).
+4. Store it as the `STRIPE_WEBHOOK_SECRET` secret in Secret Manager and expose
+   it to the Cloud Run service as an environment variable of the same name.
+5. Use Stripe's "Send test webhook" or the [Stripe CLI](https://stripe.com/docs/stripe-cli)
+   (`stripe listen --forward-to localhost:8080/api/stripe/webhook`) to confirm
+   events verify and return `200`.
+
+Local development uses the same variable: export `STRIPE_WEBHOOK_SECRET` in your
+shell (or the Stripe CLI's printed `whsec_` value when using `stripe listen`)
+before starting `cerebra serve --ui`.
+
+---
+
 ## Running After Reboot
 
 ```bash

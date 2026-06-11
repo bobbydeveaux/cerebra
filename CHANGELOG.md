@@ -31,6 +31,7 @@
 - **`internal/brain/watcher` test suite** — `Start`, `addWatchRecursive`, and `handleEvent` covered against real `*fsnotify.Watcher` instances over temp directories plus synthetic events, raising those functions from 0% to 70.8/85.7/92.0% and the package total from 78.1% to 90.4% (#29)
 - **CHANGELOG `[Unreleased]` backfilled for agentops-010 + agentops-011** — agent-level indexing (65ba86e) and Stripe webhook handler (ad78fe8) entries added at the top of `[Unreleased]` in-format, after both had landed on main without CHANGELOG coverage (#30)
 - **`cmd/` runner coverage to ≥70%** — four hermetic tests in `cmd/cmd_runners_test.go` lift `runSearch` 48.6% to 86.5%, `runServe` 46.2% to 88.5%, `runWatch` 36.0% to 73.3%, and `runBrainsWatch` 64.7% to 82.4%; `cmd/` package total 64.3% to 77.0% via test-only changes (#31)
+- **README Stripe billing section** (agentops-064) -- documents the shipped Stripe webhook handler (`POST /api/stripe/webhook`), the required `STRIPE_WEBHOOK_SECRET` env var (and the planned-only `STRIPE_PRICE_ID`), the test-mode key wiring steps, and the Cloud Run webhook URL (`https://cerebra.stackramp.io/api/stripe/webhook`). States explicitly that paid-tier `RequirePaid` gating is planned but not yet wired on `main`, so Bobby has accurate context when wiring keys (agentops-016). Docs-only, no code changes.
 
 ### Changed
 - Internal package test coverage floor raised from 7.7% to 95%+ across all 12 internal packages plus the `agent_messages` subset of `internal/store` (#4-#16)
