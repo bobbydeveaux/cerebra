@@ -108,6 +108,10 @@ First-class Model Context Protocol server over stdio. One config line to connect
 | `list_categories` | List discovered language/file categories |
 | `get_document` | Retrieve a specific indexed document |
 | `get_stats` | Database statistics |
+| `search_agent` | Search a subagent's invocations (prompts + responses) by name and FTS query ¹ |
+| `list_agent_activity` | List a subagent's invocations within a date range (metadata only) ¹ |
+
+¹ `search_agent` and `list_agent_activity` require the `agent_messages` table (added with these tools in the same migration); run a `cerebra scan` after upgrading so agent tool-use blocks are indexed.
 
 ### Web UI
 
