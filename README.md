@@ -2,6 +2,8 @@
 
 **Persistent memory for AI agents.**
 
+[![Eval Suite](https://github.com/bobbydeveaux/cerebra/actions/workflows/evals.yml/badge.svg)](https://github.com/bobbydeveaux/cerebra/actions/workflows/evals.yml)
+
 Cerebra watches your AI agent conversations in real time, indexes every interaction into a local vector database, generates concise summaries, and makes it all searchable — so every agent session starts with the full picture instead of from zero.
 
 Built on top of [Fortress](https://github.com/bobbydeveaux/fortress) (codebase indexing), Cerebra extends the pipeline with agent-aware ingestion, brain tracking, and cross-agent discovery.
