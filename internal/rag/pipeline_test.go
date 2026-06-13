@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,20 @@ import (
 	"github.com/bobbydeveaux/cerebra/internal/scanner"
 	"github.com/bobbydeveaux/cerebra/internal/store"
 )
+
+// requireNetwork skips the calling test when the sandbox cannot bind a
+// local TCP port. httptest.NewServer panics (rather than returning an
+// error) when port binding is denied, which aborts the whole package and
+// masks unrelated results. Probing 127.0.0.1 here turns that panic into a
+// clean skip; under full networking (CI / make test) it is a no-op.
+func requireNetwork(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("rag test requires network port binding (httptest): " + err.Error())
+	}
+	_ = ln.Close()
+}
 
 // ---------- fakes ----------
 
@@ -255,6 +270,7 @@ func TestBuildPrompt_LongContentTruncates(t *testing.T) {
 // ---------- error propagation in AnswerWithHistory ----------
 
 func TestAnswerWithHistory_EmbedderError(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 	p := pipelineForTest(t, &stubEmbedder{err: errors.New("boom")}, &stubStore{}, "ollama", srv)
@@ -268,6 +284,7 @@ func TestAnswerWithHistory_EmbedderError(t *testing.T) {
 }
 
 func TestAnswerWithHistory_SearchError(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer srv.Close()
 	st := &stubStore{searchErr: errors.New("db gone")}
@@ -284,6 +301,7 @@ func TestAnswerWithHistory_SearchError(t *testing.T) {
 // ---------- Ollama streaming ----------
 
 func TestStreamOllama_HappyPath(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/generate" {
 			t.Errorf("path = %q, want /api/generate", r.URL.Path)
@@ -308,6 +326,7 @@ func TestStreamOllama_HappyPath(t *testing.T) {
 }
 
 func TestStreamOllama_ErrorStatus(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "down", http.StatusInternalServerError)
 	}))
@@ -323,6 +342,7 @@ func TestStreamOllama_ErrorStatus(t *testing.T) {
 }
 
 func TestStreamOllama_ContextCancelled(t *testing.T) {
+	requireNetwork(t)
 	// Server sends a single chunk then hangs forever — context cancel must
 	// shut the goroutine down so the channel closes.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -355,6 +375,7 @@ func TestStreamOllama_ContextCancelled(t *testing.T) {
 // ---------- OpenAI streaming ----------
 
 func TestStreamOpenAI_HappyPath(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path = %q", r.URL.Path)
@@ -381,6 +402,7 @@ func TestStreamOpenAI_HappyPath(t *testing.T) {
 }
 
 func TestStreamOpenAI_ErrorStatus(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "nope", http.StatusUnauthorized)
 	}))
@@ -398,6 +420,7 @@ func TestStreamOpenAI_ErrorStatus(t *testing.T) {
 // ---------- MiniMax streaming ----------
 
 func TestStreamMiniMax_HappyPath(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/v1/chat/completions") {
 			t.Errorf("path = %q", r.URL.Path)
@@ -421,6 +444,7 @@ func TestStreamMiniMax_HappyPath(t *testing.T) {
 }
 
 func TestStreamMiniMax_ErrorStatus(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "bad", http.StatusBadRequest)
 	}))
@@ -438,6 +462,7 @@ func TestStreamMiniMax_ErrorStatus(t *testing.T) {
 // ---------- Claude streaming ----------
 
 func TestStreamClaude_HappyPath(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("x-api-key"); got != "anth-test" {
 			t.Errorf("x-api-key = %q", got)
@@ -464,6 +489,7 @@ func TestStreamClaude_HappyPath(t *testing.T) {
 }
 
 func TestStreamClaude_ErrorStatus(t *testing.T) {
+	requireNetwork(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "rate", http.StatusTooManyRequests)
 	}))
@@ -481,6 +507,7 @@ func TestStreamClaude_ErrorStatus(t *testing.T) {
 // ---------- default switch (unknown ChatLLM → Ollama) ----------
 
 func TestAnswer_DefaultSwitchFallsBackToOllama(t *testing.T) {
+	requireNetwork(t)
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
