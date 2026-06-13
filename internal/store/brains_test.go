@@ -519,6 +519,9 @@ func TestAgentMessages_FTSFallback_ViaSearch(t *testing.T) {
 	// LIKE. Drop the FTS virtual table mid-test to force the FTS join to fail,
 	// then verify the seeded row still comes back via the fallback path.
 	s := testDB(t)
+	if !s.ftsAvailable {
+		t.Skip("FTS5 not built in; run: make test (uses -tags sqlite_fts5)")
+	}
 	ctx := context.Background()
 
 	if err := s.UpsertAgentMessage(ctx, AgentMessage{
@@ -700,6 +703,9 @@ func TestListFiles_ByCategoryAndAll(t *testing.T) {
 
 func TestUpsertDocument_ReplacesExistingChunks(t *testing.T) {
 	s := testDB(t)
+	if !s.ftsAvailable {
+		t.Skip("FTS5 not built in; run: make test (uses -tags sqlite_fts5)")
+	}
 	ctx := context.Background()
 
 	doc := scanner.Document{
@@ -750,6 +756,9 @@ func TestUpsertDocument_ReplacesExistingChunks(t *testing.T) {
 
 func TestSearchFTS_EscapesQuotes(t *testing.T) {
 	s := testDB(t)
+	if !s.ftsAvailable {
+		t.Skip("FTS5 not built in; run: make test (uses -tags sqlite_fts5)")
+	}
 	ctx := context.Background()
 
 	doc := scanner.Document{

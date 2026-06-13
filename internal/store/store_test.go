@@ -185,6 +185,9 @@ func TestListCategories(t *testing.T) {
 
 func TestSearchFTS(t *testing.T) {
 	s := testDB(t)
+	if !s.ftsAvailable {
+		t.Skip("FTS5 not built in; run: make test (uses -tags sqlite_fts5)")
+	}
 	ctx := context.Background()
 
 	doc := scanner.Document{
