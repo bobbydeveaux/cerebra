@@ -324,6 +324,76 @@ before starting `cerebra serve --ui`.
 
 ---
 
+## Eval harness
+
+Cerebra ships a deterministic, API-free retrieval benchmark that gates every
+pull request. It proves the FTS keyword search path keeps surfacing the right
+facts as the codebase changes -- no embeddings, no Ollama, no OpenAI, no
+network, and no API keys, so it runs identically on a laptop and in CI.
+
+> The harness is distinct from the live LLM ablation in `evals/run.sh`, which
+> spawns real `claude -p` sessions and grades answers with an LLM judge. That
+> benchmark needs API keys and a private corpus, so it cannot gate CI. The
+> harness below is the one wired into the pipeline.
+
+### What it does
+
+1. Seeds an ephemeral SQLite database (`sqlite_fts5`) from a small,
+   self-contained fixture corpus embedded in the binary via `go:embed`.
+2. Runs each question's query through the FTS retrieval path
+   (`SearchFTS`) and inspects the top-N results.
+3. Passes a question when every one of its expected terms appears
+   (case-insensitively) somewhere in those results, and reports the
+   overall pass rate.
+
+A run exits 0 when the pass rate clears the threshold (default 70%) and
+non-zero otherwise, printing a per-question PASS/FAIL list and a summary line
+to stdout.
+
+### Running locally
+
+```bash
+# Unit tests for the harness (seed + run + threshold logic)
+go test ./internal/eval/...
+
+# Full CI-mode run against an ephemeral database
+make build                       # builds with the sqlite_fts5 tag
+./cerebra eval --ci --threshold 0.70 --top-n 5
+```
+
+`--ci` is currently the only supported mode: it creates a temporary database,
+seeds the embedded fixtures, runs the suite, and exits non-zero below the
+threshold. `--threshold` (default `0.70`) sets the minimum pass rate and
+`--top-n` (default `5`) bounds how many FTS results are inspected per question.
+
+Example output:
+
+```
+  [PASS] C01 difference between Cerebra and Fortress fork
+  [PASS] C02 token counting per brain double counting bug
+  ...
+eval: 7/7 passed (100%), threshold 70%
+```
+
+### CI gate
+
+`.github/workflows/evals.yml` runs the suite on every push to `main`, every
+pull request, and on manual dispatch. The job builds with `make build` (so the
+`chunks_fts` index exists) and then runs `./cerebra eval --ci --threshold
+0.70`. A pass rate below 70% fails the check and blocks the merge.
+
+### Fixtures and adding a question
+
+The fixture corpus lives in `internal/eval/fixtures/*.md` and is embedded at
+build time. Each fixture is a short Markdown document ingested through the
+normal `UpsertDocument` path, one chunk per file. The question set is defined
+by `Questions()` in `internal/eval/eval.go`. To add a check, ensure the fact
+you want to assert is present in a fixture (extend an existing file or add a
+new one), then append a `Question` with its `Query` and the `MustContain`
+terms the top-N results should surface.
+
+---
+
 ## Running After Reboot
 
 ```bash
