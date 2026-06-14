@@ -22,6 +22,22 @@ func seededDB(t *testing.T) *store.SQLiteStore {
 	return db
 }
 
+// closedDB returns a store handle whose underlying database/sql connection has
+// been closed, so any query against it fails with sql.ErrConnDone. Used to
+// exercise the error branches of Seed and Run without changing production code.
+func closedDB(t *testing.T) *store.SQLiteStore {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "closed.db")
+	db, err := store.New(dbPath, 768)
+	if err != nil {
+		t.Fatalf("creating test DB: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing test DB: %v", err)
+	}
+	return db
+}
+
 func TestQuestionsNonEmpty(t *testing.T) {
 	if len(Questions()) == 0 {
 		t.Fatal("expected a non-empty CI question set")
@@ -70,5 +86,51 @@ func TestRunReportsFailureForUnsatisfiableTerm(t *testing.T) {
 	}
 	if rep.Meets(0.70) {
 		t.Fatal("expected Meets(0.70) to be false when the only question fails")
+	}
+}
+
+func TestSeedErrorPath(t *testing.T) {
+	err := Seed(context.Background(), closedDB(t))
+	if err == nil {
+		t.Fatal("expected Seed to return an error when the store write fails, got nil")
+	}
+}
+
+func TestRunEmptyQuestions(t *testing.T) {
+	db := seededDB(t)
+	rep, err := Run(context.Background(), db, []Question{}, 5)
+	if err != nil {
+		t.Fatalf("Run with empty questions: unexpected error %v", err)
+	}
+	if rep.Total != 0 {
+		t.Fatalf("expected Total 0, got %d", rep.Total)
+	}
+	if rep.Pass != 0 || rep.Fail != 0 {
+		t.Fatalf("expected zero pass/fail, got pass=%d fail=%d", rep.Pass, rep.Fail)
+	}
+	if rep.PassRate != 0 {
+		t.Fatalf("expected PassRate 0 for empty question set, got %v", rep.PassRate)
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("expected no results, got %d", len(rep.Results))
+	}
+}
+
+func TestReportMeetsBoundary(t *testing.T) {
+	if !(Report{PassRate: 0.75}).Meets(0.75) {
+		t.Fatal("expected Meets to be inclusive: PassRate 0.75 should meet threshold 0.75")
+	}
+	if (Report{PassRate: 0.75}).Meets(0.751) {
+		t.Fatal("expected PassRate 0.75 to fall short of threshold 0.751")
+	}
+}
+
+func TestRunContextCancelled(t *testing.T) {
+	db := seededDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Run(ctx, db, Questions(), 5)
+	if err == nil {
+		t.Fatal("expected Run to return an error when the context is cancelled, got nil")
 	}
 }
