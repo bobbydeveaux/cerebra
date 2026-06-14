@@ -343,6 +343,9 @@ func (s *Server) toolGetDocument(ctx context.Context, id json.RawMessage, args j
 	if err != nil {
 		return errorResponse(id, -32000, "Not found: "+err.Error())
 	}
+	if doc == nil {
+		return errorResponse(id, -32000, "Not found: "+input.Path)
+	}
 
 	type chunkItem struct {
 		Content   string `json:"content"`

@@ -6,6 +6,7 @@ package mcp
 // rather than spinning up a SQLite database or an Ollama backend.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -29,26 +30,26 @@ import (
 // Only the methods reachable from the MCP server are exercised; the rest
 // return zero values so the surface stays minimal.
 type fakeStore struct {
-	categories  []store.CategorySummary
-	searchRes   []store.SearchResult
-	ftsRes      []store.SearchResult
-	doc         *scanner.Document
-	docChunks   []chunker.Chunk
-	stats       store.Stats
-	brains      []store.Brain
-	brain       *store.Brain
-	activity    []store.HourlyActivity
-	agentMsgs   []store.AgentMessage
-	agentList   []store.AgentMessage
+	categories []store.CategorySummary
+	searchRes  []store.SearchResult
+	ftsRes     []store.SearchResult
+	doc        *scanner.Document
+	docChunks  []chunker.Chunk
+	stats      store.Stats
+	brains     []store.Brain
+	brain      *store.Brain
+	activity   []store.HourlyActivity
+	agentMsgs  []store.AgentMessage
+	agentList  []store.AgentMessage
 
-	listCatsErr      error
-	getDocErr        error
-	getStatsErr      error
-	listBrainsErr    error
-	getBrainErr      error
-	listActivityErr  error
-	searchAgentErr   error
-	listAgentActErr  error
+	listCatsErr     error
+	getDocErr       error
+	getStatsErr     error
+	listBrainsErr   error
+	getBrainErr     error
+	listActivityErr error
+	searchAgentErr  error
+	listAgentActErr error
 }
 
 func (f *fakeStore) UpsertDocument(_ context.Context, _ scanner.Document, _ []chunker.Chunk) error {
@@ -122,7 +123,7 @@ func (f *fakeStore) GetBrainStats(_ context.Context) (store.BrainStats, error) {
 	return store.BrainStats{}, nil
 }
 
-func (f *fakeStore) DeleteBrainActivity(_ context.Context, _ string) error      { return nil }
+func (f *fakeStore) DeleteBrainActivity(_ context.Context, _ string) error          { return nil }
 func (f *fakeStore) UpsertActivity(_ context.Context, _ store.HourlyActivity) error { return nil }
 
 func (f *fakeStore) ListActivity(_ context.Context, _ string, _ string) ([]store.HourlyActivity, error) {
@@ -544,6 +545,24 @@ func TestToolGetDocumentNotFound(t *testing.T) {
 	}
 }
 
+// TestToolGetDocumentNilDoc is a regression test for a nil-pointer panic: when
+// the store returns (nil, nil, nil) -- no error but no document -- the handler
+// must surface a structured -32000 rather than dereferencing the nil *Document.
+// This mirrors the existing nil guard in toolGetBrain.
+func TestToolGetDocumentNilDoc(t *testing.T) {
+	st := &fakeStore{} // doc == nil, getDocErr == nil
+	srv := NewServer(st, &fakeEmbedder{})
+	req := toolCallReq(32, "get_document", map[string]interface{}{"path": "ghost.go"})
+	resp := srv.handle(context.Background(), req)
+
+	if resp.Error == nil {
+		t.Fatal("expected -32000 for a nil document, got nil error (likely a panic was avoided only by this guard)")
+	}
+	if resp.Error.Code != -32000 {
+		t.Errorf("error code = %d, want -32000", resp.Error.Code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // toolGetStats
 // ---------------------------------------------------------------------------
@@ -862,10 +881,10 @@ func TestServeRespondsToRequest(t *testing.T) {
 func TestServeSkipsMalformedAndNotifications(t *testing.T) {
 	srv := NewServer(&fakeStore{}, &fakeEmbedder{})
 	input := strings.Join([]string{
-		`not valid json`,                                              // skipped by Unmarshal-continue
-		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,      // no ID -> skipped
-		`{"jsonrpc":"2.0","id":null,"method":"notifications/ping"}`,   // explicit null ID -> skipped
-		`{"jsonrpc":"2.0","id":7,"method":"initialize"}`,              // real request
+		`not valid json`, // skipped by Unmarshal-continue
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,    // no ID -> skipped
+		`{"jsonrpc":"2.0","id":null,"method":"notifications/ping"}`, // explicit null ID -> skipped
+		`{"jsonrpc":"2.0","id":7,"method":"initialize"}`,            // real request
 	}, "\n") + "\n"
 
 	out := withStdin(t, input, func() {
@@ -894,5 +913,148 @@ func TestServeReturnsOnEmptyStdin(t *testing.T) {
 	})
 	if out != "" {
 		t.Errorf("expected no output for empty stdin, got %q", out)
+	}
+}
+
+func TestServeReturnsScannerError(t *testing.T) {
+	// Serve sizes its bufio.Scanner buffer at 1 MiB. A single line longer than
+	// that overflows the buffer; bufio.Scanner stops and surfaces ErrTooLong
+	// via sc.Err(), which Serve must return rather than swallow.
+	//
+	// The 2 MiB payload is far larger than a pipe's kernel buffer, so the write
+	// must run concurrently with Serve reading; otherwise the writer would block
+	// before Serve ever starts. We drive os.Stdin directly here rather than
+	// through withStdin, which writes the whole input up front and would deadlock
+	// on a payload this size.
+	origIn := os.Stdin
+	rIn, wIn, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdin = rIn
+	t.Cleanup(func() {
+		os.Stdin = origIn
+	})
+
+	go func() {
+		// One line longer than the 1 MiB scanner buffer, then EOF.
+		_, _ = io.WriteString(wIn, strings.Repeat("a", 2*1024*1024)+"\n")
+		_ = wIn.Close()
+	}()
+
+	srv := NewServer(&fakeStore{}, &fakeEmbedder{})
+	serveErr := srv.Serve(context.Background())
+
+	if serveErr == nil {
+		t.Fatal("expected Serve to return the scanner error, got nil")
+	}
+	if !errors.Is(serveErr, bufio.ErrTooLong) {
+		t.Errorf("Serve error = %v, want bufio.ErrTooLong", serveErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Malformed tool arguments
+//
+// Every arg-taking handler unmarshals params.Arguments into a local struct and
+// deliberately ignores the decode error, degrading to a zero-value input. This
+// is the documented contract: a tool call with a syntactically valid envelope
+// but garbage arguments must NOT surface a -32602 (that code is reserved for a
+// malformed envelope, see TestHandleToolsCallMalformedParams). Instead it falls
+// through to the store with empty inputs. These table-driven cases pin that
+// behaviour so a future "tighten arg validation" refactor is a conscious choice
+// rather than a silent regression.
+// ---------------------------------------------------------------------------
+
+func TestToolCallMalformedArgumentsDegradeToZeroValue(t *testing.T) {
+	const garbageArgs = `"this is a string, not an arguments object"`
+
+	tests := []struct {
+		name string
+		tool string
+	}{
+		{"search", "search"},
+		{"get_document", "get_document"},
+		{"list_brains", "list_brains"},
+		{"get_brain", "get_brain"},
+		{"get_activity", "get_activity"},
+		{"search_agent", "search_agent"},
+		{"list_agent_activity", "list_agent_activity"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st := &fakeStore{
+				brain: &store.Brain{BrainID: "", ProjectKey: "p", Status: "active"},
+			}
+			srv := NewServer(st, &fakeEmbedder{vec: []float32{1, 2, 3, 4}})
+
+			params, _ := json.Marshal(map[string]json.RawMessage{
+				"name":      json.RawMessage(`"` + tt.tool + `"`),
+				"arguments": json.RawMessage(garbageArgs),
+			})
+			req := newReq(100, "tools/call", nil)
+			req.Params = params
+
+			// The contract: garbage arguments must never panic and must never
+			// produce -32602 (that code is reserved for a malformed envelope, see
+			// TestHandleToolsCallMalformedParams). Returning a structured -32000
+			// store/lookup error for a zero-value input (e.g. get_document with an
+			// empty path) is acceptable; a nil-pointer panic is not.
+			resp := srv.handle(context.Background(), req)
+			if resp.Error != nil && resp.Error.Code == -32602 {
+				t.Fatalf("tool %q returned -32602 for garbage arguments; that code is for a malformed envelope, not bad arguments", tt.tool)
+			}
+			if resp.Error == nil {
+				if _, ok := resp.Result.(map[string]interface{}); !ok {
+					t.Fatalf("tool %q success result is not a content envelope: %T", tt.tool, resp.Result)
+				}
+			}
+		})
+	}
+}
+
+// list_categories and get_stats take no arguments, so a garbage arguments blob
+// can never reach them in a way that changes behaviour. This documents that
+// they are intentionally excluded from the table above.
+func TestNoArgToolsIgnoreArguments(t *testing.T) {
+	st := &fakeStore{
+		categories: []store.CategorySummary{{Name: "api", FileCount: 1, ChunkCount: 1}},
+		stats:      store.Stats{Repos: 1},
+	}
+	srv := NewServer(st, &fakeEmbedder{})
+
+	for _, tool := range []string{"list_categories", "get_stats"} {
+		params, _ := json.Marshal(map[string]json.RawMessage{
+			"name":      json.RawMessage(`"` + tool + `"`),
+			"arguments": json.RawMessage(`12345`),
+		})
+		req := newReq(101, "tools/call", nil)
+		req.Params = params
+
+		resp := srv.handle(context.Background(), req)
+		if resp.Error != nil {
+			t.Errorf("no-arg tool %q returned error with junk arguments", tool)
+		}
+	}
+}
+
+// A tools/call with the name present but arguments entirely omitted must behave
+// identically to empty arguments: the handlers default their limits and run.
+func TestToolCallOmittedArguments(t *testing.T) {
+	// Populate the lookups that have a not-found guard (get_document, get_brain)
+	// so the defaulted zero-value input still reaches a success branch.
+	st := &fakeStore{
+		brain: &store.Brain{BrainID: "x", Status: "active"},
+		doc:   &scanner.Document{RelPath: "x", Content: "x", Language: "go"},
+	}
+	srv := NewServer(st, &fakeEmbedder{vec: []float32{1, 2, 3, 4}})
+
+	for _, tool := range []string{"search", "list_brains", "search_agent", "list_agent_activity", "get_activity", "get_document", "get_brain"} {
+		req := toolCallReq(102, tool, nil)
+		resp := srv.handle(context.Background(), req)
+		if resp.Error != nil {
+			t.Errorf("tool %q with omitted arguments returned error", tool)
+		}
 	}
 }
