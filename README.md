@@ -267,11 +267,15 @@ Commands:
 Cerebra's AgentOps paid tier is delivered through Stripe. The subscription
 lifecycle is handled server-side by a Stripe webhook (`POST /api/stripe/webhook`).
 
-> **Current status:** the webhook handler is shipped and verifies events, but
-> paid-tier feature gating (a `RequirePaid` middleware backed by a licence
-> store) is **planned, not yet wired on `main`**. All features are currently
-> unrestricted regardless of subscription state. The steps below cover wiring
-> the webhook so subscription events are received and verified.
+> **Current status:** the webhook handler is shipped and verifies events,
+> and `RequirePaid` gating is now wired on `main` (agentops-090). The
+> premium endpoints `POST /api/search`, `GET /api/chat/stream` and
+> `GET /api/brains/{id}` are gated. Gating **fails open** unless
+> `STRIPE_WEBHOOK_SECRET` is set, so local development and the eval CI gate
+> run unrestricted. Subscription state is stored in the local SQLite database
+> (Cerebra is a single-user local-first tool; `stackramp.yaml` sets
+> `database: false`, so there is no Postgres to hold it). The gate is
+> instance-level: any active subscription unlocks the instance.
 
 ### What the webhook does
 
@@ -297,7 +301,8 @@ Verification behaviour:
 | Variable | Status | Purpose | Example |
 |----------|--------|---------|---------|
 | `STRIPE_WEBHOOK_SECRET` | **Required** | Signing secret used to verify the `Stripe-Signature` header. The webhook returns `500` until this is set. | `whsec_xxxxxxxxxxxxxxxxxxxxxxxx` |
-| `STRIPE_PRICE_ID` | Planned | Price/plan identifier for the paid tier. Reserved for the planned `RequirePaid` gating; **not read by current code**. | `price_xxxxxxxxxxxxxxxx` |
+| `STRIPE_CHECKOUT_URL` | Optional | Checkout URL returned in the `402 Payment Required` body so an unsubscribed caller knows where to subscribe. Read by the `RequirePaid` gate. | `https://buy.stripe.com/xxxx` |
+| `STRIPE_PRICE_ID` | Planned | Price/plan identifier for the paid tier. Reserved for a future per-plan checkout flow; **not read by current code**. | `price_xxxxxxxxxxxxxxxx` |
 
 Set these as environment variables only. On Cloud Run the value is mounted from
 Secret Manager -- never hardcode it and never commit it.
