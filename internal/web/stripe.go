@@ -124,3 +124,57 @@ func (s *Server) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
+
+// subscriptionWriter is the seam the store-backed Stripe handler writes
+// through. *store.SQLiteStore satisfies it. Kept narrow so the webhook
+// path does not depend on the whole store surface and so tests can inject
+// a fake recorder.
+type subscriptionWriter interface {
+	SetSubscriptionActive(ctx context.Context, customerID, sessionID string) error
+	SetSubscriptionInactive(ctx context.Context, customerID string) error
+}
+
+// storeStripeHandler is the real StripeEventHandler (replacing the no-op
+// loggingStripeHandler). It translates the two subscription-lifecycle
+// events into subscription state writes (agentops-090).
+type storeStripeHandler struct {
+	store subscriptionWriter
+}
+
+// OnCheckoutComplete records an active subscription for the checkout
+// session customer. A session with no resolvable customer ID is ignored
+// (logged, not errored) so Stripe is not driven into a retry loop over an
+// event we cannot key on.
+func (h storeStripeHandler) OnCheckoutComplete(ctx context.Context, event stripe.Event) error {
+	var session stripe.CheckoutSession
+	if err := json.Unmarshal(event.Data.Raw, &session); err != nil {
+		return err
+	}
+	customerID := ""
+	if session.Customer != nil {
+		customerID = session.Customer.ID
+	}
+	if customerID == "" {
+		log.Printf("stripe: checkout.session.completed id=%s has no customer; ignoring", event.ID)
+		return nil
+	}
+	return h.store.SetSubscriptionActive(ctx, customerID, session.ID)
+}
+
+// OnSubscriptionDeleted marks the customer subscription inactive. A
+// missing customer ID is ignored for the same reason as above.
+func (h storeStripeHandler) OnSubscriptionDeleted(ctx context.Context, event stripe.Event) error {
+	var sub stripe.Subscription
+	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
+		return err
+	}
+	customerID := ""
+	if sub.Customer != nil {
+		customerID = sub.Customer.ID
+	}
+	if customerID == "" {
+		log.Printf("stripe: customer.subscription.deleted id=%s has no customer; ignoring", event.ID)
+		return nil
+	}
+	return h.store.SetSubscriptionInactive(ctx, customerID)
+}

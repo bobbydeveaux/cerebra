@@ -19,11 +19,11 @@ import (
 )
 
 type Stats struct {
-	Repos      int    `json:"repos"`
-	Files      int    `json:"files"`
-	Chunks     int    `json:"chunks"`
-	Categories int    `json:"categories"`
-	LastScan   string `json:"last_scan"`
+	Repos      int     `json:"repos"`
+	Files      int     `json:"files"`
+	Chunks     int     `json:"chunks"`
+	Categories int     `json:"categories"`
+	LastScan   string  `json:"last_scan"`
 	DBSizeMB   float64 `json:"db_size_mb"`
 }
 
@@ -80,7 +80,7 @@ type BrainStats struct {
 // HourlyActivity holds per-hour message counts for a brain.
 type HourlyActivity struct {
 	BrainID    string `json:"brain_id"`
-	Hour       string `json:"hour"`        // ISO hour bucket, e.g. "2026-04-28T14"
+	Hour       string `json:"hour"` // ISO hour bucket, e.g. "2026-04-28T14"
 	ProjectKey string `json:"project_key"`
 	UserMsgs   int    `json:"user_msgs"`
 	AsstMsgs   int    `json:"asst_msgs"`
@@ -92,13 +92,13 @@ type HourlyActivity struct {
 // ID is the tool_use_id, which uniquely identifies the pairing of a tool_use with its
 // matching tool_result (the latter may arrive in a later incremental parse).
 type AgentMessage struct {
-	ID          string `json:"id"`           // tool_use_id (e.g. "toolu_01...")
-	BrainID     string `json:"brain_id"`     // parent session id
-	AgentName   string `json:"agent_name"`   // subagent_type
-	Description string `json:"description"`  // input.description
-	Prompt      string `json:"prompt"`       // input.prompt
-	Response    string `json:"response"`     // tool_result content (text only)
-	Timestamp   string `json:"timestamp"`    // ISO timestamp of the tool_use
+	ID          string `json:"id"`          // tool_use_id (e.g. "toolu_01...")
+	BrainID     string `json:"brain_id"`    // parent session id
+	AgentName   string `json:"agent_name"`  // subagent_type
+	Description string `json:"description"` // input.description
+	Prompt      string `json:"prompt"`      // input.prompt
+	Response    string `json:"response"`    // tool_result content (text only)
+	Timestamp   string `json:"timestamp"`   // ISO timestamp of the tool_use
 	ProjectKey  string `json:"project_key"`
 }
 
@@ -213,6 +213,17 @@ func (s *SQLiteStore) initSchema() error {
 		}
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("executing agent_messages schema: %w\nSQL: %s", err, stmt)
+		}
+	}
+
+	// Create subscriptions table (AgentOps paid tier - agentops-090)
+	for _, stmt := range strings.Split(subscriptionsSchemaSQL, ";") {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("executing subscriptions schema: %w\nSQL: %s", err, stmt)
 		}
 	}
 

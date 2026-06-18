@@ -38,6 +38,7 @@ type Server struct {
 	tmpls         map[string]*template.Template
 	mux           *http.ServeMux
 	stripeHandler StripeEventHandler
+	paid          paidChecker
 	logger        *slog.Logger
 }
 
@@ -51,6 +52,17 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 		tmpls:         make(map[string]*template.Template),
 		stripeHandler: loggingStripeHandler{},
 		logger:        slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+	}
+
+	// Wire the paid-tier seams to the concrete store when it supports
+	// them. The store.Store interface deliberately stays free of billing
+	// methods; *store.SQLiteStore satisfies paidChecker and the
+	// subscription writer used by the Stripe webhook handler.
+	if pc, ok := any(s).(paidChecker); ok {
+		srv.paid = pc
+	}
+	if sw, ok := any(s).(subscriptionWriter); ok {
+		srv.stripeHandler = storeStripeHandler{store: sw}
 	}
 
 	funcMap := template.FuncMap{
@@ -82,9 +94,9 @@ func NewServer(s store.Store, emb embedder.Embedder, p *rag.Pipeline, cfg *confi
 	srv.mux.HandleFunc("GET /search", srv.handleSearch)
 	srv.mux.HandleFunc("GET /chat", srv.handleChatPage)
 	srv.mux.HandleFunc("GET /brains", srv.handleBrains)
-	srv.mux.HandleFunc("GET /api/brains/{id}", srv.handleBrainDetail)
-	srv.mux.HandleFunc("POST /api/search", srv.handleSearchAPI)
-	srv.mux.HandleFunc("GET /api/chat/stream", srv.handleChatStream)
+	srv.mux.HandleFunc("GET /api/brains/{id}", srv.RequirePaid(srv.handleBrainDetail))
+	srv.mux.HandleFunc("POST /api/search", srv.RequirePaid(srv.handleSearchAPI))
+	srv.mux.HandleFunc("GET /api/chat/stream", srv.RequirePaid(srv.handleChatStream))
 	srv.mux.HandleFunc("POST /api/stripe/webhook", srv.handleStripeWebhook)
 	srv.mux.Handle("GET /static/", http.FileServerFS(staticFS))
 
