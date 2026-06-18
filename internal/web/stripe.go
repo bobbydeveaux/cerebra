@@ -146,6 +146,9 @@ type storeStripeHandler struct {
 // (logged, not errored) so Stripe is not driven into a retry loop over an
 // event we cannot key on.
 func (h storeStripeHandler) OnCheckoutComplete(ctx context.Context, event stripe.Event) error {
+	if event.Data == nil {
+		return nil
+	}
 	var session stripe.CheckoutSession
 	if err := json.Unmarshal(event.Data.Raw, &session); err != nil {
 		return err
@@ -164,6 +167,9 @@ func (h storeStripeHandler) OnCheckoutComplete(ctx context.Context, event stripe
 // OnSubscriptionDeleted marks the customer subscription inactive. A
 // missing customer ID is ignored for the same reason as above.
 func (h storeStripeHandler) OnSubscriptionDeleted(ctx context.Context, event stripe.Event) error {
+	if event.Data == nil {
+		return nil
+	}
 	var sub stripe.Subscription
 	if err := json.Unmarshal(event.Data.Raw, &sub); err != nil {
 		return err
