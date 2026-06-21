@@ -289,6 +289,116 @@ func TestHandleChatStreamForwardsHistory(t *testing.T) {
 	}
 }
 
+// TestHandleChatStreamIgnoresMalformedHistory covers the swallowed-error
+// branch of the `history` query-param parse: handleChatStream calls
+// json.Unmarshal on the raw param and deliberately ignores the returned
+// error, so a malformed value must NOT abort the request. The handler
+// should proceed with a nil history, forward the question to the pipeline,
+// stream the tokens, and still terminate with [DONE]. Driven through an
+// httptest.ResponseRecorder (which satisfies http.Flusher) so it needs no
+// socket bind.
+func TestHandleChatStreamIgnoresMalformedHistory(t *testing.T) {
+	st := newFakeStore()
+	srv := newWikiServer(t, st, &fakeEmbedder{})
+	pipe := &fakeChatPipeline{tokens: []string{"answer"}}
+	srv.pipeline = pipe
+
+	// `history` is not valid JSON; json.Unmarshal fails and the error is
+	// intentionally discarded by the handler.
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?q=ask&history=not-json", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleChatStream(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if got, want := w.Header().Get("Content-Type"), "text/event-stream"; got != want {
+		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+	if pipe.gotQuestion != "ask" {
+		t.Errorf("pipeline got question %q, want %q", pipe.gotQuestion, "ask")
+	}
+	if pipe.gotHistory != nil {
+		t.Errorf("history = %#v, want nil after malformed parse", pipe.gotHistory)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "data: answer\n\n") {
+		t.Errorf("body missing token frame: %q", body)
+	}
+	if !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Errorf("body missing [DONE] terminator: %q", body)
+	}
+}
+
+// TestHandleChatStreamThinkBlockNoTrailingContent covers the
+// `remaining == ""` arm of the </think> close path: when the stream ends
+// with the closing think tag and no visible content follows, the handler
+// must emit nothing for that segment (no empty `data: \n\n` frame) and
+// still terminate with [DONE]. The existing think-block tests always have
+// visible content after </think>, leaving this empty-remainder arm
+// unexercised.
+func TestHandleChatStreamThinkBlockNoTrailingContent(t *testing.T) {
+	st := newFakeStore()
+	srv := newWikiServer(t, st, &fakeEmbedder{})
+	srv.pipeline = &fakeChatPipeline{
+		tokens: []string{"<think>", "reasoning", "</think>"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?q=q", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleChatStream(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if strings.Contains(body, "reasoning") {
+		t.Errorf("think-block content leaked to client: %q", body)
+	}
+	// The only data frame should be the terminator; no empty answer frame.
+	if strings.Contains(body, "data: \n\n") {
+		t.Errorf("unexpected empty data frame emitted: %q", body)
+	}
+	if !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Errorf("body missing [DONE] terminator: %q", body)
+	}
+}
+
+// TestHandleChatStreamEmptyTokenStream covers the path where the pipeline
+// returns a valid (non-error) but empty channel: the token loop body never
+// runs, so the handler must still set the SSE headers and emit the [DONE]
+// terminator. Without this branch covered a zero-result answer would be
+// indistinguishable from a stalled stream.
+func TestHandleChatStreamEmptyTokenStream(t *testing.T) {
+	st := newFakeStore()
+	srv := newWikiServer(t, st, &fakeEmbedder{})
+	srv.pipeline = &fakeChatPipeline{tokens: nil}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/chat/stream?q=q", nil)
+	w := httptest.NewRecorder()
+
+	srv.handleChatStream(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	if got, want := w.Header().Get("Content-Type"), "text/event-stream"; got != want {
+		t.Errorf("Content-Type = %q, want %q", got, want)
+	}
+	if got, want := w.Header().Get("Cache-Control"), "no-cache"; got != want {
+		t.Errorf("Cache-Control = %q, want %q", got, want)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Errorf("empty stream must still emit [DONE]: %q", body)
+	}
+}
+
 // Compile-time guard that fakeChatPipeline still satisfies the chatPipeline
 // interface. If the interface gains methods, this fails at build time.
 var _ chatPipeline = (*fakeChatPipeline)(nil)
