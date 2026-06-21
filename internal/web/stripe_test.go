@@ -204,6 +204,90 @@ func TestStripeWebhookRejectsMissingSecret(t *testing.T) {
 	}
 }
 
+// TestStripeWebhookRejectsOversizedPayload verifies the body-size cap.
+// The handler reads through http.MaxBytesReader(w, r.Body,
+// stripePayloadMaxBytes); a body larger than the cap makes io.ReadAll
+// return an error, which the handler maps to a clean 400 ("could not read
+// request body") before any signature check or dispatch. The body is signed
+// with the CORRECT secret so the rejection is provably the size cap and not
+// an incidental signature mismatch.
+func TestStripeWebhookRejectsOversizedPayload(t *testing.T) {
+	const secret = "whsec_test_secret_ffffffffffffffffffffff"
+	t.Setenv("STRIPE_WEBHOOK_SECRET", secret)
+
+	rec := &recordingStripeHandler{}
+	srv := newServerForTest(rec)
+
+	// One byte over the cap. The payload is valid JSON padded with a long
+	// string field so the whole body exceeds stripePayloadMaxBytes.
+	prefix := `{"id":"evt_big","object":"event","type":"checkout.session.completed","data":{"object":{}},"pad":"`
+	suffix := `"}`
+	padLen := stripePayloadMaxBytes + 1 - len(prefix) - len(suffix)
+	if padLen < 1 {
+		t.Fatalf("pad length calculation went negative: %d", padLen)
+	}
+	payload := []byte(prefix + strings.Repeat("a", padLen) + suffix)
+	if len(payload) <= stripePayloadMaxBytes {
+		t.Fatalf("payload not oversized: len=%d cap=%d", len(payload), stripePayloadMaxBytes)
+	}
+	sig := stripeSignature(t, payload, secret, time.Now())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/webhook", strings.NewReader(string(payload)))
+	req.Header.Set("Stripe-Signature", sig)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.handleStripeWebhook(w, req)
+
+	if w.Code == http.StatusOK {
+		t.Fatalf("oversized payload accepted: got 200, want non-200. body=%q", w.Body.String())
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("want 400 for oversized body, got %d. body=%q", w.Code, w.Body.String())
+	}
+	if got := rec.checkoutCalls.Load(); got != 0 {
+		t.Errorf("handler should not fire on oversized body, got %d checkout calls", got)
+	}
+	if got := rec.deletionCalls.Load(); got != 0 {
+		t.Errorf("handler should not fire on oversized body, got %d deletion calls", got)
+	}
+}
+
+// TestStripeWebhookRejectsEmptyBody verifies that a zero-byte body with a
+// valid-format Stripe-Signature is rejected with 400. The body reads
+// successfully (zero bytes is under the cap), then signature verification
+// fails on the empty payload, so the handler returns 400 and never reaches
+// dispatch.
+func TestStripeWebhookRejectsEmptyBody(t *testing.T) {
+	const secret = "whsec_test_secret_gggggggggggggggggggggg"
+	t.Setenv("STRIPE_WEBHOOK_SECRET", secret)
+
+	rec := &recordingStripeHandler{}
+	srv := newServerForTest(rec)
+
+	// Valid-format signature over an empty payload. Even though it is signed
+	// with the correct secret, ConstructEventWithOptions rejects an empty
+	// payload (nothing to parse / verify into an event), yielding 400.
+	sig := stripeSignature(t, []byte{}, secret, time.Now())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stripe/webhook", strings.NewReader(""))
+	req.Header.Set("Stripe-Signature", sig)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	srv.handleStripeWebhook(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for empty body, got %d. body=%q", w.Code, w.Body.String())
+	}
+	if got := rec.checkoutCalls.Load(); got != 0 {
+		t.Errorf("handler should not fire on empty body, got %d checkout calls", got)
+	}
+	if got := rec.deletionCalls.Load(); got != 0 {
+		t.Errorf("handler should not fire on empty body, got %d deletion calls", got)
+	}
+}
+
 // TestStripeWebhookRouteRegistered ensures the route plumbing in NewServer
 // is exercised — a 405/404 here would mean POST /api/stripe/webhook is not
 // registered with the mux, which is the exact contract agentops-012 / -013
