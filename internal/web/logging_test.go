@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bobbydeveaux/cerebra/internal/chunker"
 	"github.com/bobbydeveaux/cerebra/internal/config"
@@ -201,6 +202,103 @@ func TestStatusRecorderFlushForwarded(t *testing.T) {
 	rec.Flush()
 	if rw.Body.String() != "chunk" {
 		t.Errorf("body = %q, want %q", rw.Body.String(), "chunk")
+	}
+}
+
+// TestLoggingMiddlewareRecordsRequirePaid402 covers the interaction
+// introduced in PR #48: RequirePaid sits inside the logging wrapper, and
+// when it short-circuits with 402 Payment Required the recorder must log
+// status 402 (not the implicit 200). RequirePaid is exercised directly via
+// loggingMiddleware rather than the server mux because the /api routes are
+// only wired when a concrete paid checker is present; here we inject a
+// fakePaidChecker reporting no active subscription with gating enabled.
+func TestLoggingMiddlewareRecordsRequirePaid402(t *testing.T) {
+	t.Setenv("STRIPE_WEBHOOK_SECRET", "whsec_x")
+	t.Setenv("STRIPE_CHECKOUT_URL", "https://buy.stripe.com/test_cerebra")
+
+	srv := &Server{paid: fakePaidChecker{active: false}}
+	downstreamReached := false
+	gated := srv.RequirePaid(func(w http.ResponseWriter, _ *http.Request) {
+		downstreamReached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
+	h := loggingMiddleware(http.HandlerFunc(gated), logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/search", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if downstreamReached {
+		t.Fatal("downstream handler must not be reached on the 402 path")
+	}
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("response status: got %d want %d", w.Code, http.StatusPaymentRequired)
+	}
+
+	line := strings.TrimSpace(buf.String())
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("log line is not JSON: %v\nline: %s", err, line)
+	}
+	status, ok := entry["status_code"].(float64)
+	if !ok {
+		t.Fatalf("status_code missing or wrong type: %v (%T)", entry["status_code"], entry["status_code"])
+	}
+	if int(status) != http.StatusPaymentRequired {
+		t.Errorf("logged status_code = %d, want %d", int(status), http.StatusPaymentRequired)
+	}
+	checkString(t, entry, "path", "/api/search")
+	checkString(t, entry, "method", http.MethodPost)
+}
+
+// TestLoggingMiddlewareLargeRequestBody verifies the middleware does not
+// hang or panic when the downstream handler leaves a large (1MB) request
+// body partially read. The recorder must still emit one line with the
+// handler's status. A 5s deadline guards against a regression that blocks
+// on the body.
+func TestLoggingMiddlewareLargeRequestBody(t *testing.T) {
+	const bodySize = 1 << 20 // 1MB
+
+	// Downstream handler intentionally does NOT drain r.Body, mimicking a
+	// handler that rejects oversized input early.
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte("too large"))
+	}
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
+	h := loggingMiddleware(http.HandlerFunc(handler), logger)
+
+	body := bytes.NewReader(bytes.Repeat([]byte("a"), bodySize))
+	req := httptest.NewRequest(http.MethodPost, "/api/search", body)
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(w, req)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("middleware hung on a 1MB request body")
+	}
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("response status: got %d want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+	line := strings.TrimSpace(buf.String())
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("log line is not JSON: %v\nline: %s", err, line)
+	}
+	status, _ := entry["status_code"].(float64)
+	if int(status) != http.StatusRequestEntityTooLarge {
+		t.Errorf("logged status_code = %d, want %d", int(status), http.StatusRequestEntityTooLarge)
 	}
 }
 
