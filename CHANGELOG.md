@@ -10,6 +10,7 @@
 - **`internal/web` test suite** — handler coverage raised from 7.7% to 83.9%, exercising wiki, search, and chat handlers (#5)
 - **`internal/brain` test suite** — registry, session loading, and summary paths covered, 0% to 78.1% (#6)
 - **`internal/scanner` test suite** — language detection, categorisation, and walk logic covered, 25% to 91% (#7)
+- **`subscriptions` store error-path tests** (agentops-109) — `TestSubscription_ClosedDBErrors` drives `SetSubscriptionActive`, `SetSubscriptionInactive`, `HasActiveSubscription` and `GetSubscription` against a closed DB, covering the previously untested `fmt.Errorf` wrap in each method. All four functions in `subscriptions.go` now report 100% statement coverage. Follows the closed-DB convention of `TestActivity_ClosedDBErrors` and `TestAgentMessages_ClosedDBErrors`.
 - **`internal/store` test suite** — query helpers and write paths covered, 42% to 84.5% (#8)
 - **`internal/embedder` test suite** — Ollama and OpenAI providers covered, 32.8% to 95.5% (#9)
 - **`internal/rag` test suite** — pipeline assembly, prompt building, and streaming covered, 0% to 90.6% (#10)

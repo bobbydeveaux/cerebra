@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -113,5 +114,60 @@ func TestSetSubscriptionInactiveUnknownCustomerIsNoop(t *testing.T) {
 	}
 	if sub != nil {
 		t.Fatal("expected no row for an unknown customer")
+	}
+}
+
+// TestSubscription_ClosedDBErrors fills the error-return branches of
+// subscriptions.go. The happy paths, idempotent re-delivery, empty-customer
+// guard and unknown-customer no-op are exercised above; the remaining
+// uncovered code is the fmt.Errorf wrap in each method, reached only when the
+// underlying connection fails. Closing the store before each call forces the
+// driver to return ErrConnDone, the same convention used by
+// TestActivity_ClosedDBErrors and TestAgentMessages_ClosedDBErrors.
+func TestSubscription_ClosedDBErrors(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	// Seed one active customer so the queries have a real target before the
+	// close trips them.
+	if err := s.SetSubscriptionActive(ctx, "cus_closed", "cs_seed"); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// SetSubscriptionActive on closed DB -> "activating subscription" wrap.
+	// A non-empty customer ID is required so the empty-customer guard does not
+	// short-circuit before the Exec that actually trips the closed connection.
+	if err := s.SetSubscriptionActive(ctx, "cus_closed", "cs_after"); err == nil {
+		t.Error("expected SetSubscriptionActive to error after Close")
+	} else if !strings.Contains(err.Error(), "activating subscription") {
+		t.Errorf("expected activate wrap, got %v", err)
+	}
+
+	// SetSubscriptionInactive on closed DB -> "deactivating subscription" wrap.
+	if err := s.SetSubscriptionInactive(ctx, "cus_closed"); err == nil {
+		t.Error("expected SetSubscriptionInactive to error after Close")
+	} else if !strings.Contains(err.Error(), "deactivating subscription") {
+		t.Errorf("expected deactivate wrap, got %v", err)
+	}
+
+	// HasActiveSubscription on closed DB -> "checking active subscription"
+	// wrap. The closed connection returns a driver error rather than
+	// sql.ErrNoRows, so the false/nil short-circuit is not taken.
+	if _, err := s.HasActiveSubscription(ctx); err == nil {
+		t.Error("expected HasActiveSubscription to error after Close")
+	} else if !strings.Contains(err.Error(), "checking active subscription") {
+		t.Errorf("expected check wrap, got %v", err)
+	}
+
+	// GetSubscription on closed DB -> "getting subscription" wrap. Distinct
+	// from the unknown-customer nil-return path, which returns (nil, nil).
+	if _, err := s.GetSubscription(ctx, "cus_closed"); err == nil {
+		t.Error("expected GetSubscription to error after Close")
+	} else if !strings.Contains(err.Error(), "getting subscription") {
+		t.Errorf("expected get wrap, got %v", err)
 	}
 }
