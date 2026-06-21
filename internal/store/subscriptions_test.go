@@ -63,6 +63,84 @@ func TestSubscriptionLifecycle(t *testing.T) {
 	}
 }
 
+// TestGetSubscription_Found upserts a subscription and reads it back, asserting
+// every field is populated. TestSubscriptionLifecycle exercises GetSubscription
+// in passing; this isolates the happy path so a regression points straight here.
+func TestGetSubscription_Found(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	if err := s.SetSubscriptionActive(ctx, "cus_found", "cs_found"); err != nil {
+		t.Fatalf("SetSubscriptionActive: %v", err)
+	}
+
+	sub, err := s.GetSubscription(ctx, "cus_found")
+	if err != nil {
+		t.Fatalf("GetSubscription: %v", err)
+	}
+	if sub == nil {
+		t.Fatal("expected a subscription, got nil")
+	}
+	if sub.StripeCustomerID != "cus_found" {
+		t.Errorf("customer id: got %q want %q", sub.StripeCustomerID, "cus_found")
+	}
+	if sub.Status != SubscriptionActive {
+		t.Errorf("status: got %q want %q", sub.Status, SubscriptionActive)
+	}
+	if sub.StripeSessionID != "cs_found" {
+		t.Errorf("session id: got %q want %q", sub.StripeSessionID, "cs_found")
+	}
+	if sub.CreatedAt.IsZero() {
+		t.Error("created_at should be populated by the CURRENT_TIMESTAMP default")
+	}
+	if sub.UpdatedAt.IsZero() {
+		t.Error("updated_at should be populated by the CURRENT_TIMESTAMP default")
+	}
+}
+
+// TestGetSubscription_NotFound asserts that an unknown customer returns
+// (nil, nil), not an error. Callers distinguish "no subscription" from "lookup
+// failed" by the nil pointer, so this contract must hold.
+func TestGetSubscription_NotFound(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	sub, err := s.GetSubscription(ctx, "cus_does_not_exist")
+	if err != nil {
+		t.Fatalf("expected no error for an unknown customer, got %v", err)
+	}
+	if sub != nil {
+		t.Fatalf("expected nil subscription for an unknown customer, got %+v", sub)
+	}
+}
+
+// TestGetSubscription_ClosedDB asserts the error-wrap branch is reached when the
+// underlying connection is gone. Closing the store before the call forces the
+// driver to return ErrConnDone rather than sql.ErrNoRows, so the (nil, nil)
+// short-circuit is not taken and the "getting subscription" wrap fires.
+func TestGetSubscription_ClosedDB(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	if err := s.SetSubscriptionActive(ctx, "cus_closed_get", "cs_seed"); err != nil {
+		t.Fatalf("seed subscription: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	sub, err := s.GetSubscription(ctx, "cus_closed_get")
+	if err == nil {
+		t.Fatal("expected GetSubscription to error after Close")
+	}
+	if !strings.Contains(err.Error(), "getting subscription") {
+		t.Errorf("expected getting-subscription wrap, got %v", err)
+	}
+	if sub != nil {
+		t.Errorf("expected nil subscription on error, got %+v", sub)
+	}
+}
+
 func TestHasActiveSubscriptionWithMultipleCustomers(t *testing.T) {
 	s := testDB(t)
 	ctx := context.Background()

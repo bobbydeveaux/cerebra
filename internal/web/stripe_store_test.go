@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -15,13 +16,16 @@ type fakeSubWriter struct {
 	inactiveCustomer string
 	activeCalls      int
 	inactiveCalls    int
+	// activeErr, when set, is returned from SetSubscriptionActive so handler
+	// error-propagation paths can be exercised.
+	activeErr error
 }
 
 func (f *fakeSubWriter) SetSubscriptionActive(_ context.Context, customerID, sessionID string) error {
 	f.activeCalls++
 	f.activeCustomer = customerID
 	f.activeSession = sessionID
-	return nil
+	return f.activeErr
 }
 
 func (f *fakeSubWriter) SetSubscriptionInactive(_ context.Context, customerID string) error {
@@ -85,5 +89,27 @@ func TestStoreStripeHandlerNoCustomerIgnored(t *testing.T) {
 	}
 	if fake.activeCalls != 0 {
 		t.Fatalf("expected no write for an event with no customer, got %d", fake.activeCalls)
+	}
+}
+
+// TestStoreStripeHandlerCheckoutComplete_StoreError documents that a store
+// failure is NOT swallowed: OnCheckoutComplete returns the error verbatim so
+// the webhook responds non-2xx and Stripe retries delivery. Swallowing it
+// would silently leave a paying customer un-provisioned.
+func TestStoreStripeHandlerCheckoutComplete_StoreError(t *testing.T) {
+	wantErr := errors.New("db unavailable")
+	fake := &fakeSubWriter{activeErr: wantErr}
+	h := storeStripeHandler{store: fake}
+
+	raw := `{"id":"cs_test_err","customer":"cus_test_err"}`
+	err := h.OnCheckoutComplete(context.Background(), eventWithRaw(t, "checkout.session.completed", raw))
+	if err == nil {
+		t.Fatal("expected the store error to propagate, got nil")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("expected wrapped wantErr, got %v", err)
+	}
+	if fake.activeCalls != 1 {
+		t.Errorf("store should still be called once before erroring, got %d", fake.activeCalls)
 	}
 }
