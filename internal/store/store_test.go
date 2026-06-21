@@ -235,7 +235,7 @@ func TestVectorSearch(t *testing.T) {
 	chunks := []chunker.Chunk{
 		{
 			ID: "vec-c1", DocumentID: "vec-doc",
-			Content: "package api\nfunc HandleRequest() {}",
+			Content:   "package api\nfunc HandleRequest() {}",
 			StartLine: 1, EndLine: 2,
 			Embedding: embedding,
 			Metadata: chunker.ChunkMeta{
@@ -272,6 +272,212 @@ func TestVectorSearch(t *testing.T) {
 	// Score should be very high (near 1.0) since query = document
 	if results[0].Score < 0.99 {
 		t.Errorf("expected score near 1.0 for identical vectors, got %f", results[0].Score)
+	}
+}
+
+// --- agentops-111: extend Store.GetDocument and Store.Search coverage ---
+// Fills paths left after TestUpsertAndGetDocument / TestVectorSearch /
+// TestSearchFTS and the closed-DB error wraps in query_test.go: GetDocument
+// not-found and absolute-path branches, metadata round-trip with multi-chunk
+// ordering, and Search distance ranking / limit truncation / empty-index.
+
+// TestGetDocument_NotFound asserts a lookup of a never-indexed path returns an
+// error and a nil doc even when the DB already holds other documents.
+func TestGetDocument_NotFound(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	seed := scanner.Document{
+		ID: "nf-seed", Path: "/tmp/seed.go", RelPath: "seed.go",
+		Category: scanner.CategoryUnknown, FileType: scanner.FileTypeCode,
+		Content: "package seed", ContentHash: "nfhash", Metadata: map[string]string{},
+	}
+	if err := s.UpsertDocument(ctx, seed, nil); err != nil {
+		t.Fatalf("seed UpsertDocument: %v", err)
+	}
+
+	doc, chunks, err := s.GetDocument(ctx, "does/not/exist.go")
+	if err == nil {
+		t.Fatal("expected error for unknown path, got nil")
+	}
+	if doc != nil {
+		t.Errorf("expected nil doc on not-found, got %+v", doc)
+	}
+	if chunks != nil {
+		t.Errorf("expected nil chunks on not-found, got %d", len(chunks))
+	}
+}
+
+// TestGetDocument_ByAbsolutePath exercises the OR path branch: a doc seeded with
+// a RelPath distinct from its absolute Path resolves when looked up by Path.
+func TestGetDocument_ByAbsolutePath(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	doc := scanner.Document{
+		ID: "abs-1", Path: "/abs/root/pkg/server.go", RelPath: "pkg/server.go",
+		Category: scanner.CategoryAPI, Language: "go", FileType: scanner.FileTypeCode,
+		Content: "package pkg", ContentHash: "abshash", Metadata: map[string]string{},
+	}
+	if err := s.UpsertDocument(ctx, doc, nil); err != nil {
+		t.Fatalf("UpsertDocument: %v", err)
+	}
+
+	got, _, err := s.GetDocument(ctx, "/abs/root/pkg/server.go")
+	if err != nil {
+		t.Fatalf("GetDocument by absolute path: %v", err)
+	}
+	if got.ID != "abs-1" {
+		t.Errorf("expected doc abs-1 via absolute path, got %s", got.ID)
+	}
+	if got.RelPath != "pkg/server.go" {
+		t.Errorf("expected rel_path pkg/server.go, got %s", got.RelPath)
+	}
+}
+
+// TestGetDocument_MetadataAndChunkOrder asserts metadata JSON round-trips, chunks
+// come back ordered by start_line (seeded out of order), and each chunk ChunkMeta
+// is populated from the parent document.
+func TestGetDocument_MetadataAndChunkOrder(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+
+	doc := scanner.Document{
+		ID: "meta-1", Repo: "cerebra", RepoRoot: "/repos/cerebra",
+		Path: "/repos/cerebra/x.go", RelPath: "x.go",
+		Category: scanner.CategoryAPI, Language: "go", FileType: scanner.FileTypeCode,
+		Content: "package x", ContentHash: "metahash",
+		Metadata: map[string]string{"author": "gopher", "remote_url": "https://example/cerebra"},
+	}
+	// Seed chunks out of start_line order to prove ORDER BY start_line.
+	chunks := []chunker.Chunk{
+		{ID: "meta-c2", DocumentID: "meta-1", Content: "second", StartLine: 10, EndLine: 12},
+		{ID: "meta-c1", DocumentID: "meta-1", Content: "first", StartLine: 1, EndLine: 3},
+	}
+	if err := s.UpsertDocument(ctx, doc, chunks); err != nil {
+		t.Fatalf("UpsertDocument: %v", err)
+	}
+
+	got, gotChunks, err := s.GetDocument(ctx, "x.go")
+	if err != nil {
+		t.Fatalf("GetDocument: %v", err)
+	}
+	if got.Repo != "cerebra" {
+		t.Errorf("expected repo cerebra, got %q", got.Repo)
+	}
+	if got.Metadata["author"] != "gopher" {
+		t.Errorf("expected metadata author=gopher, got %q", got.Metadata["author"])
+	}
+	if len(gotChunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(gotChunks))
+	}
+	if gotChunks[0].ID != "meta-c1" || gotChunks[1].ID != "meta-c2" {
+		t.Errorf("expected chunks ordered by start_line (meta-c1, meta-c2), got %s, %s",
+			gotChunks[0].ID, gotChunks[1].ID)
+	}
+	if gotChunks[0].Metadata.Repo != "cerebra" {
+		t.Errorf("expected chunk ChunkMeta.Repo cerebra, got %q", gotChunks[0].Metadata.Repo)
+	}
+	if gotChunks[0].Metadata.Path != "x.go" {
+		t.Errorf("expected chunk ChunkMeta.Path x.go, got %q", gotChunks[0].Metadata.Path)
+	}
+	if gotChunks[0].Metadata.Category != scanner.CategoryAPI {
+		t.Errorf("expected chunk ChunkMeta.Category api, got %q", gotChunks[0].Metadata.Category)
+	}
+}
+
+// TestSearch_RankingAndLimit seeds three chunks at increasing distance from the
+// query and asserts closest-first ordering (descending Score) and limit truncation.
+func TestSearch_RankingAndLimit(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+	if !s.vecAvailable {
+		t.Skip("sqlite-vec extension not available")
+	}
+
+	const dim = 768
+	mkEmbedding := func(v float32) []float32 {
+		e := make([]float32, dim)
+		for i := range e {
+			e[i] = v
+		}
+		return e
+	}
+
+	// near=0.0, mid=0.5, far=1.0; query is all-zeros so near is closest.
+	seed := []struct {
+		id  string
+		val float32
+	}{
+		{"rank-far", 1.0},
+		{"rank-near", 0.0},
+		{"rank-mid", 0.5},
+	}
+	for _, sd := range seed {
+		doc := scanner.Document{
+			ID: sd.id, Path: "/tmp/" + sd.id + ".go", RelPath: sd.id + ".go",
+			Category: scanner.CategoryAPI, Language: "go", FileType: scanner.FileTypeCode,
+			Content: "package r", ContentHash: "h-" + sd.id, Metadata: map[string]string{},
+		}
+		chunks := []chunker.Chunk{
+			{
+				ID: sd.id + "-c", DocumentID: sd.id, Content: "package r",
+				StartLine: 1, EndLine: 1, Embedding: mkEmbedding(sd.val),
+			},
+		}
+		if err := s.UpsertDocument(ctx, doc, chunks); err != nil {
+			t.Fatalf("UpsertDocument %s: %v", sd.id, err)
+		}
+	}
+
+	query := make([]float32, dim) // all zeros
+
+	// limit=3 -> all three, ranked closest-first.
+	results, err := s.Search(ctx, query, 3)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+	if results[0].Chunk.ID != "rank-near-c" {
+		t.Errorf("expected closest chunk first (rank-near-c), got %s", results[0].Chunk.ID)
+	}
+	for i := 1; i < len(results); i++ {
+		if results[i-1].Score < results[i].Score {
+			t.Errorf("expected scores in descending order, got %f before %f",
+				results[i-1].Score, results[i].Score)
+		}
+	}
+
+	// limit=1 -> truncated to the single closest result.
+	top, err := s.Search(ctx, query, 1)
+	if err != nil {
+		t.Fatalf("Search limit=1: %v", err)
+	}
+	if len(top) != 1 {
+		t.Fatalf("expected 1 result with limit=1, got %d", len(top))
+	}
+	if top[0].Chunk.ID != "rank-near-c" {
+		t.Errorf("expected rank-near-c as top result, got %s", top[0].Chunk.ID)
+	}
+}
+
+// TestSearch_EmptyIndex asserts a search on a fresh DB returns an empty slice and
+// no error, protecting the MCP search surface on a cold index.
+func TestSearch_EmptyIndex(t *testing.T) {
+	s := testDB(t)
+	ctx := context.Background()
+	if !s.vecAvailable {
+		t.Skip("sqlite-vec extension not available")
+	}
+
+	results, err := s.Search(ctx, make([]float32, 768), 5)
+	if err != nil {
+		t.Fatalf("Search on empty index: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results on empty index, got %d", len(results))
 	}
 }
 
