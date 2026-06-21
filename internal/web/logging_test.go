@@ -302,6 +302,80 @@ func TestLoggingMiddlewareLargeRequestBody(t *testing.T) {
 	}
 }
 
+// TestLoggingMiddleware5xxCapture verifies the recorder captures a
+// server-error status. The existing logging tests exercise 200, 404,
+// 402 and 413; the 5xx branch (a downstream handler returning 500) was
+// previously unexercised. A 500 must be logged as status_code 500, not
+// the implicit 200, so an auditor reviewing the structured log can see
+// server failures.
+func TestLoggingMiddleware5xxCapture(t *testing.T) {
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("boom"))
+	}
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
+	h := loggingMiddleware(http.HandlerFunc(handler), logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/search", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("response status: got %d want %d", w.Code, http.StatusInternalServerError)
+	}
+
+	line := strings.TrimSpace(buf.String())
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("log line is not JSON: %v\nline: %s", err, line)
+	}
+	status, ok := entry["status_code"].(float64)
+	if !ok {
+		t.Fatalf("status_code missing or wrong type: %v (%T)", entry["status_code"], entry["status_code"])
+	}
+	if int(status) != http.StatusInternalServerError {
+		t.Errorf("logged status_code = %d, want %d", int(status), http.StatusInternalServerError)
+	}
+	checkString(t, entry, "path", "/api/search")
+	checkString(t, entry, "method", http.MethodGet)
+}
+
+// TestLoggingMiddlewareRequestIDPassthrough documents the middleware request
+// contract: loggingMiddleware forwards the inbound request (including any
+// X-Request-ID header) to the downstream handler unaltered, and does NOT
+// generate or inject an X-Request-ID into the response. logging.go has no
+// request-ID propagation today; this test is the regression anchor so that a
+// future implementer who adds generation has an explicit failing assertion to
+// update rather than a silent behaviour change.
+func TestLoggingMiddlewareRequestIDPassthrough(t *testing.T) {
+	const reqID = "req-abc"
+
+	var seen string
+	var present bool
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		seen, present = r.Header.Get("X-Request-ID"), r.Header.Values("X-Request-ID") != nil
+		w.WriteHeader(http.StatusOK)
+	}
+
+	buf := &safeBuffer{}
+	logger := slog.New(slog.NewJSONHandler(buf, nil))
+	h := loggingMiddleware(http.HandlerFunc(handler), logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Request-ID", reqID)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if !present || seen != reqID {
+		t.Errorf("downstream X-Request-ID = %q (present=%v), want %q forwarded unchanged", seen, present, reqID)
+	}
+	if got := w.Header().Get("X-Request-ID"); got != "" {
+		t.Errorf("response X-Request-ID = %q, want empty: middleware does not inject one today", got)
+	}
+}
+
 // checkString is a small helper to assert that a JSON map entry equals
 // an expected string. Keeps the table-style tests above readable.
 func checkString(t *testing.T, m map[string]any, key, want string) {
