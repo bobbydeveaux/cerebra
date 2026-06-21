@@ -384,3 +384,130 @@ func TestTemplateEscape(t *testing.T) {
 	}
 }
 
+// --- agentops-117: additional branch coverage ---
+
+// TestHandleSearchAPIEmbedderEmptyFallsBackToFTS exercises the fallback that
+// fires when the embedder succeeds but vector Search returns no rows. This is
+// distinct from the embedErr path: here Embed returns a vector cleanly, yet
+// len(results)==0 still routes through SearchFTS.
+func TestHandleSearchAPIEmbedderEmptyFallsBackToFTS(t *testing.T) {
+	st := newFakeStore() // searchResults empty -> vector search yields nothing
+	st.ftsResults = []store.SearchResult{
+		{
+			Chunk: chunker.Chunk{
+				Content:  "fts only hit",
+				Metadata: chunker.ChunkMeta{Path: "fts/only.md"},
+			},
+			Score: 0.42,
+		},
+	}
+	emb := &fakeEmbedder{vec: []float32{0.1, 0.2, 0.3, 0.4}} // embed succeeds
+	srv := newWikiServer(t, st, emb)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/search", strings.NewReader("q=hello"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	srv.handleSearchAPI(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "fts/only.md") {
+		t.Errorf("expected FTS fallback result after empty vector search, got %q", body)
+	}
+}
+
+// TestHandleSearchAPIOmitsLineSpanAndMeta covers the two conditional render
+// branches inside handleSearchAPI: StartLine==0 suppresses the result-lines
+// span, and an empty Repo suppresses the result-meta div. The file link and
+// score must still render.
+func TestHandleSearchAPIOmitsLineSpanAndMeta(t *testing.T) {
+	st := newFakeStore()
+	st.searchResults = []store.SearchResult{
+		{
+			Chunk: chunker.Chunk{
+				Content:   "no line span, no repo",
+				StartLine: 0,
+				EndLine:   0,
+				Metadata:  chunker.ChunkMeta{Path: "bare/file.txt"}, // Repo empty
+			},
+			Score: 0.33,
+		},
+	}
+	srv := newWikiServer(t, st, &fakeEmbedder{vec: []float32{0.1, 0.2, 0.3, 0.4}})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/search", strings.NewReader("q=bare"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+
+	srv.handleSearchAPI(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "bare/file.txt") {
+		t.Errorf("expected file link in body, got %q", body)
+	}
+	if !strings.Contains(body, "0.33") {
+		t.Errorf("expected score in body, got %q", body)
+	}
+	if strings.Contains(body, "result-lines") {
+		t.Errorf("StartLine==0 must suppress result-lines span, got %q", body)
+	}
+	if strings.Contains(body, "result-meta") {
+		t.Errorf("empty Repo must suppress result-meta div, got %q", body)
+	}
+}
+
+// TestHandleCategoryGroupsAndSortsDirs covers handleCategory grouping files
+// into DirGroups keyed by directory and emitting them in sorted directory
+// order. Two distinct directories must both render.
+func TestHandleCategoryGroupsAndSortsDirs(t *testing.T) {
+	st := newFakeStore()
+	st.categories = []store.CategorySummary{{Name: "code", FileCount: 3, ChunkCount: 6}}
+	st.filesByCat = map[string][]store.FileSummary{
+		"code": {
+			{RelPath: "zeta/z.go", Language: "go"},
+			{RelPath: "alpha/a.go", Language: "go"},
+			{RelPath: "alpha/b.go", Language: "go"},
+		},
+	}
+	srv := newWikiServer(t, st, &fakeEmbedder{})
+
+	req := httptest.NewRequest(http.MethodGet, "/categories/code", nil)
+	req.SetPathValue("name", "code")
+	w := httptest.NewRecorder()
+
+	srv.handleCategory(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	ai := strings.Index(body, "alpha")
+	zi := strings.Index(body, "zeta")
+	if ai < 0 || zi < 0 {
+		t.Fatalf("expected both alpha and zeta directories rendered, got %q", body)
+	}
+	if ai > zi {
+		t.Errorf("expected alpha to render before zeta (sorted dir order), alpha=%d zeta=%d", ai, zi)
+	}
+}
+
+// TestBuildTopDirsEmpty guards the nil-input path: no files yields no dirs and
+// must not panic.
+func TestBuildTopDirsEmpty(t *testing.T) {
+	if got := buildTopDirs(nil); len(got) != 0 {
+		t.Errorf("buildTopDirs(nil) = %v, want empty", got)
+	}
+}
+
+// TestBuildDirTreeEmpty guards the nil-input path for the tree builder.
+func TestBuildDirTreeEmpty(t *testing.T) {
+	if got := buildDirTree(nil); len(got) != 0 {
+		t.Errorf("buildDirTree(nil) = %v, want empty", got)
+	}
+}
