@@ -1,0 +1,6 @@
+.cerebra/
+cerebra
+site/node_modules/
+*.db
+*.db-*
+.git/
